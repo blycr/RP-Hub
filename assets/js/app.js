@@ -669,6 +669,14 @@ createApp({
                 : provider.apiUrl;
             settings.apiKey = settings.apiProviderKeys[provider.id] || '';
             showApiProviderSelector.value = false;
+            // 切换供应商后自动刷新模型列表
+            fetchModels().then(() => {
+                // 如果当前模型不在新供应商的模型列表中，重置为空让用户重新选择
+                const modelIds = availableModels.value.map(m => m.id || m);
+                if (settings.model && !modelIds.includes(settings.model)) {
+                    settings.model = '';
+                }
+            }).catch(() => { });
         };
         normalizeApiProviderSettings();
 
