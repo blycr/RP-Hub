@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RP-Hub Sync & Plaza LAN Hijack
 // @namespace    rphub
-// @version      1.2.2
+// @version      1.3.0
 // @description  RP-Hub 跨设备 GitHub 同步 + 广场 LAN 优先/源站兜底资源挟持 + 下载次数绕过（支持 Tampermonkey/Violentmonkey/Firefox Mobile）
 // @author       You
 // @match        https://*.github.io/RP-Hub/*
@@ -44,9 +44,58 @@
         }
     }
 
+    // 广场被 RP-Hub 以跨域 iframe 嵌入时，浏览器会拦截 autofocus 并刷控制台警告：
+    // "Blocked autofocusing on a <input> element in a cross-origin subframe"。
+    // 等价处理：用户首次交互前剥离 autofocus 属性并吞掉程序化 focus()，
+    // 交互后恢复正常——行为与浏览器默认完全一致，只是不再告警。
+    const inCrossOriginSubframe = (() => {
+        try {
+            if (window.self === window.top) return false;
+            void window.top.location.href; // 跨域访问会抛异常
+            return false;
+        } catch (e) {
+            return true;
+        }
+    })();
+
+    function suppressIframeAutofocus() {
+        let activated = false;
+        const mark = () => { activated = true; };
+        document.addEventListener('pointerdown', mark, { capture: true, once: true });
+        document.addEventListener('keydown', mark, { capture: true, once: true });
+
+        const proto = unsafeWindow.HTMLElement && unsafeWindow.HTMLElement.prototype;
+        if (proto && typeof proto.focus === 'function') {
+            const origFocus = proto.focus;
+            Object.defineProperty(proto, 'focus', {
+                configurable: true,
+                writable: true,
+                value: function (...args) {
+                    if (!activated) return;
+                    return origFocus.apply(this, args);
+                },
+            });
+        }
+
+        const strip = (root) => {
+            if (root.matches && root.matches('[autofocus]')) root.removeAttribute('autofocus');
+            if (root.querySelectorAll) {
+                root.querySelectorAll('[autofocus]').forEach((el) => el.removeAttribute('autofocus'));
+            }
+        };
+        onDomReady(() => strip(document));
+        const mo = new MutationObserver((muts) => {
+            if (activated) { mo.disconnect(); return; }
+            muts.forEach((m) => m.addedNodes.forEach(strip));
+        });
+        mo.observe(document.documentElement || document, { childList: true, subtree: true });
+        setTimeout(() => mo.disconnect(), 20000);
+    }
+
     if (isRpHub) {
         onDomReady(initRpHubSync);
     } else if (isPlaza) {
+        if (inCrossOriginSubframe) suppressIframeAutofocus();
         initPlazaHijack();
     }
 
@@ -238,29 +287,31 @@
         }
     }
 
-    // 半透明小圆钮：贴右边缘中下部，避开广场底部操作栏，移动端不挡内容
+    // 白底小圆钮：可自由拖动、松手吸附最近侧边、无操作自动淡化，尽量不打断沉浸感
     const FLOAT_BTN_STYLE = `
         position: fixed;
-        right: 10px;
-        top: 62%;
-        width: 44px;
-        height: 44px;
+        width: 40px;
+        height: 40px;
         border-radius: 50%;
-        border: none;
-        background: rgba(79, 70, 229, 0.85);
-        color: #fff;
+        border: 1px solid rgba(0,0,0,0.08);
+        background: rgba(255,255,255,0.92);
+        color: #6b7280;
         padding: 0;
         display: flex;
         align-items: center;
         justify-content: center;
-        box-shadow: 0 4px 14px rgba(0,0,0,0.25);
-        cursor: pointer;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+        cursor: grab;
         z-index: 99999;
-        opacity: 0.75;
-        transition: opacity .2s;
+        opacity: 1;
+        transition: opacity .3s;
+        backdrop-filter: blur(4px);
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
     `;
 
-    const SYNC_SVG = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>`;
+    const SYNC_SVG = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;pointer-events:none;"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>`;
 
     function makeFloatButton(id, title) {
         if (document.getElementById(id)) return null;
@@ -270,11 +321,95 @@
         btn.title = title;
         btn.setAttribute('aria-label', title);
         btn.style.cssText = FLOAT_BTN_STYLE;
-        btn.addEventListener('mouseenter', () => { btn.style.opacity = '1'; });
-        btn.addEventListener('mouseleave', () => { btn.style.opacity = '0.75'; });
-        btn.addEventListener('touchstart', () => { btn.style.opacity = '1'; }, { passive: true });
-        btn.addEventListener('click', createConfigPanel);
         document.body.appendChild(btn);
+
+        // ---------- 位置：记忆 + 恢复（GM 存储跨域共享，两个站点通用） ----------
+        const POS_KEY = 'float_btn_pos_v1';
+        const saved = GM_getValue(POS_KEY, null);
+        const pos = saved && typeof saved === 'object' && saved.side
+            ? saved
+            : { side: 'right', topRatio: 0.62 };
+
+        const applyPos = (animate) => {
+            const w = window.innerWidth, h = window.innerHeight;
+            const bw = btn.offsetWidth || 40, bh = btn.offsetHeight || 40;
+            const top = Math.min(Math.max(pos.topRatio * h - bh / 2, 8), h - bh - 8);
+            const left = pos.side === 'left' ? 8 : w - bw - 8;
+            btn.style.transition = animate ? 'left .25s ease, top .25s ease, opacity .3s' : 'opacity .3s';
+            btn.style.left = left + 'px';
+            btn.style.top = top + 'px';
+        };
+        applyPos(false);
+        window.addEventListener('resize', () => applyPos(false));
+
+        // ---------- 无操作自动淡化 ----------
+        let idleTimer = null;
+        const wake = () => {
+            btn.style.opacity = '1';
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => { btn.style.opacity = '0.3'; }, 3000);
+        };
+        wake();
+        btn.addEventListener('mouseenter', wake);
+
+        // ---------- 拖拽 + 贴边吸附 ----------
+        let dragging = false, moved = false, suppressClick = false;
+        let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+        btn.addEventListener('pointerdown', (e) => {
+            dragging = true;
+            moved = false;
+            startX = e.clientX;
+            startY = e.clientY;
+            const r = btn.getBoundingClientRect();
+            startLeft = r.left;
+            startTop = r.top;
+            btn.style.cursor = 'grabbing';
+            try { btn.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+            wake();
+            e.preventDefault();
+        });
+
+        btn.addEventListener('pointermove', (e) => {
+            if (!dragging) return;
+            const dx = e.clientX - startX, dy = e.clientY - startY;
+            if (!moved && Math.hypot(dx, dy) > 6) moved = true;
+            if (!moved) return;
+            btn.style.transition = 'opacity .3s';
+            const w = window.innerWidth, h = window.innerHeight;
+            const bw = btn.offsetWidth, bh = btn.offsetHeight;
+            const nl = Math.min(Math.max(startLeft + dx, 0), w - bw);
+            const nt = Math.min(Math.max(startTop + dy, 0), h - bh);
+            btn.style.left = nl + 'px';
+            btn.style.top = nt + 'px';
+            pos.topRatio = (nt + bh / 2) / h;
+        });
+
+        const endDrag = () => {
+            if (!dragging) return;
+            dragging = false;
+            btn.style.cursor = 'grab';
+            if (moved) {
+                const r = btn.getBoundingClientRect();
+                pos.side = (r.left + r.width / 2) < window.innerWidth / 2 ? 'left' : 'right';
+                GM_setValue(POS_KEY, pos);
+                applyPos(true);
+                suppressClick = true;
+                setTimeout(() => { suppressClick = false; }, 80);
+            }
+            wake();
+        };
+        btn.addEventListener('pointerup', endDrag);
+        btn.addEventListener('pointercancel', endDrag);
+
+        btn.addEventListener('click', (e) => {
+            if (suppressClick) {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                return;
+            }
+            createConfigPanel();
+        });
         return btn;
     }
 
