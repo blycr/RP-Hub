@@ -75,12 +75,26 @@ jobs:
             echo "patch_status=ok" >> "$GITHUB_OUTPUT"
           else
             echo "patch_status=lost" >> "$GITHUB_OUTPUT"
-            echo "::warning::plazaId patch lost in assets/js/app.js after upstream merge. Manual re-apply required."
+            echo "::warning::plazaId patch lost in assets/js/app.js after upstream merge. Attempting auto re-apply."
           fi
 
           git add -A
           git commit --no-edit || true
         id: merge
+
+      - name: Re-apply plazaId patch if lost
+        if: steps.check.outputs.updated == 'true' && steps.merge.outputs.patch_status == 'lost'
+        run: |
+          # 从 RP-Hub-Sync 仓库下载补丁脚本并运行
+          curl -sL https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-plazaId-patch.js -o /tmp/reapply-plazaId-patch.js
+          node /tmp/reapply-plazaId-patch.js assets/js/app.js
+          git add assets/js/app.js
+          git commit -m "chore: auto re-apply plazaId patch after upstream merge" || true
+
+      - name: Push to origin
+        if: steps.check.outputs.updated == 'true'
+        run: |
+          git push origin main
 
       - name: Push to origin
         if: steps.check.outputs.updated == 'true'
