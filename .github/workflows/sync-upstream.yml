@@ -58,8 +58,29 @@ jobs:
       - name: Merge upstream changes
         if: steps.check.outputs.updated == 'true'
         run: |
-          # 优先采用 upstream 的改动，避免你本地新增的文件（如本 workflow）产生冲突
-          git merge upstream/main -m "Sync upstream $(date -u +%Y-%m-%d)" -X theirs
+          # 备份本地关键文件，防止 upstream 删除
+          mkdir -p /tmp/rphub-backup
+          cp favicon.svg /tmp/rphub-backup/ 2>/dev/null || true
+          cp .gitignore /tmp/rphub-backup/ 2>/dev/null || true
+
+          # 优先采用 upstream 改动，避免本地新增文件产生冲突
+          git merge upstream/main -m "Sync upstream $(date -u +%Y-%m-%d)" -X theirs || true
+
+          # 恢复关键文件
+          cp /tmp/rphub-backup/favicon.svg . 2>/dev/null || true
+          cp /tmp/rphub-backup/.gitignore . 2>/dev/null || true
+
+          # 检查 app.js 是否还包含 plazaId 补丁
+          if grep -q "RPHUB_PLAZA_CARD" assets/js/app.js; then
+            echo "patch_status=ok" >> "$GITHUB_OUTPUT"
+          else
+            echo "patch_status=lost" >> "$GITHUB_OUTPUT"
+            echo "::warning::plazaId patch lost in assets/js/app.js after upstream merge. Manual re-apply required."
+          fi
+
+          git add -A
+          git commit --no-edit || true
+        id: merge
 
       - name: Push to origin
         if: steps.check.outputs.updated == 'true'
@@ -70,6 +91,9 @@ jobs:
         run: |
           if [ "${{ steps.check.outputs.updated }}" = "true" ]; then
             echo "✅ Upstream synced and pushed. GitHub Pages will auto-deploy."
+            if [ "${{ steps.merge.outputs.patch_status }}" = "lost" ]; then
+              echo "⚠️ plazaId patch lost. Please re-apply manually following README.md instructions."
+            fi
           else
             echo "⏭️ No upstream changes. Skipped push to save quota."
           fi
