@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         RP-Hub Sync & Plaza LAN Hijack
 // @namespace    rphub
-// @version      1.4.1
-// @description  RP-Hub 跨设备 GitHub 同步 + 广场 LAN 优先/源站兜底资源挟持 + 下载次数绕过（支持 Tampermonkey/Violentmonkey/Firefox Mobile）
+// @version      2.0.0
+// @description  RP-Hub 跨设备 GitHub 同步（增量/分片/角色卡剥离）+ 广场 LAN 优先/源站兜底资源挟持 + 下载次数绕过（支持 Tampermonkey/Violentmonkey/Firefox Mobile）
 // @author       You
 // @match        https://*.github.io/RP-Hub/*
 // @match        https://rphforum.zeabur.app/*
@@ -33,8 +33,25 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     // ============================================================
     const DB_NAME = 'RPHubDB';
     const DB_STORE = 'store';
-    const SYNC_FILE_PATH = 'rp-hub-sync/snapshot.enc.json';
+    const SYNC_DIR = 'rp-hub-sync';
+    const SYNC_STATE_PATH = `${SYNC_DIR}/state.enc.json`;
+    const SYNC_CARD_MAP_PATH = `${SYNC_DIR}/card-id-map.enc.json`;
+    const SYNC_CHATS_INDEX_PATH = `${SYNC_DIR}/chats-index.enc.json`;
+    const SYNC_CHATS_DIR = `${SYNC_DIR}/chats`;
+    // 旧版兼容：v1.x 使用单个 snapshot.enc.json
+    const LEGACY_SYNC_FILE_PATH = `${SYNC_DIR}/snapshot.enc.json`;
     const SYNC_BRANCH = 'main';
+
+    // 角色卡相关 key 前缀
+    const KEY_CHARACTERS = 'rp_hub_characters';
+    const KEY_CHAT_PREFIX = 'rp_hub_chat_';
+    const KEY_MEMORIES_PREFIX = 'rp_hub_memories_';
+    const KEY_CLASSIC_MEMORIES_PREFIX = 'rp_hub_classic_memories_';
+    const KEY_SETTINGS = 'rp_hub_settings';
+
+    // 大小阈值（bytes）
+    const SIZE_WARN_BYTES = 25 * 1024 * 1024; // 25 MB 预警
+    const SIZE_MAX_BYTES = 90 * 1024 * 1024;  // 90 MB 接近 GitHub content limit
 
     // ============================================================
     // 环境判断
@@ -428,7 +445,13 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 
     function initRpHubSync() {
         registerSyncMenu();
-        if (isTopFrame()) injectSyncButton();
+        if (isTopFrame()) {
+            injectSyncButton();
+            // 页面加载后异步检查一次角色卡生命周期（更新/删除）
+            setTimeout(() => {
+                checkPlazaCardLifecycle().catch(e => log('Lifecycle check error:', e));
+            }, 5000);
+        }
     }
 
     function registerSyncMenu() {
@@ -578,44 +601,36 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         try {
             showConfigStatus('正在读取本地状态...');
             const data = await dumpIndexedDB();
-            const json = JSON.stringify(data);
-            log('IndexedDB size:', json.length, 'chars');
+            const analysis = analyzeIndexedDB(data);
 
-            showConfigStatus('正在加密...');
-            const compressed = await gzipText(json);
-            const encrypted = await encrypt(compressed, cfg.syncPassphrase);
-
-            const payload = {
-                version: 1,
-                exportedAt: Date.now(),
-                deviceId: await getDeviceId(),
-                encryptedBlob: arrayBufferToBase64(encrypted),
-                encoding: 'base64+aes-gcm+gzip',
-            };
-
-            showConfigStatus('正在上传到 GitHub...');
-            const content = stringToBase64(JSON.stringify(payload));
-            const existing = await getGitHubFile(cfg);
-            const body = {
-                message: `RP-Hub sync from ${await getDeviceId()} @ ${new Date().toISOString()}`,
-                content: content,
-            };
-            if (existing && existing.sha) {
-                body.sha = existing.sha;
+            const warn = checkSizeWarning(analysis.total);
+            if (warn) {
+                if (warn.level === 'error') {
+                    notify('⚠️ ' + warn.message, true);
+                    if (!confirm('IndexedDB 体积过大，继续推送可能导致失败或超出 GitHub 限制。仍要继续吗？')) {
+                        showConfigStatus('已取消推送');
+                        return;
+                    }
+                } else {
+                    notify('⚠️ ' + warn.message, true);
+                }
             }
 
-            await githubRequest({
-                method: 'PUT',
-                url: `https://api.github.com/repos/${cfg.githubOwner}/${cfg.githubRepo}/contents/${SYNC_FILE_PATH}`,
-                headers: {
-                    Authorization: `token ${cfg.githubToken}`,
-                    Accept: 'application/vnd.github+json',
-                    'Content-Type': 'application/json',
-                },
-                data: JSON.stringify(body),
-            });
+            showConfigStatus('正在准备同步包...');
+            const { files, meta } = await prepareSyncPayload(data);
+            log('Sync v2 payload:', meta);
 
-            notify('✅ 状态已推送到 GitHub');
+            showConfigStatus(`正在上传到 GitHub（${files.length} 个文件）...`);
+            const deviceId = await getDeviceId();
+            const message = `RP-Hub sync v2 from ${deviceId} @ ${new Date().toISOString()}`;
+
+            for (const file of files) {
+                const existing = await getGitHubFileByPath(cfg, file.path);
+                await putGitHubFile(cfg, file.path, file.content, message, existing && existing.sha);
+                log('Uploaded:', file.path);
+            }
+
+            notify(`✅ 已推送 ${files.length} 个文件到 GitHub（剥离角色卡图片）`);
             showConfigStatus('✅ 推送成功');
         } catch (e) {
             console.error('[RP-Hub Sync] Push failed:', e);
@@ -634,28 +649,22 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 
         try {
             showConfigStatus('正在从 GitHub 下载...');
-            const file = await getGitHubFile(cfg);
-            if (!file) {
-                notify('❌ GitHub 上没有找到同步文件');
-                showConfigStatus('❌ 未找到同步文件');
-                return;
-            }
-            log('sync file meta:', { size: file.size, sha: file.sha, hasContent: !!file.content });
 
-            const content = await getGitHubFileContent(cfg, file);
-            if (!content) {
-                throw new Error('同步文件内容为空或已损坏');
+            // 优先尝试新版 v2 多文件结构
+            const stateFile = await getGitHubFileByPath(cfg, SYNC_STATE_PATH);
+            let data;
+            if (stateFile) {
+                data = await pullSyncV2(cfg);
+            } else {
+                // 兼容旧版 v1 单文件结构
+                data = await pullSyncV1(cfg);
             }
-            const payload = JSON.parse(content);
-
-            showConfigStatus('正在解密...');
-            const encrypted = base64ToArrayBuffer(payload.encryptedBlob);
-            const compressed = await decrypt(encrypted, cfg.syncPassphrase);
-            const json = await gunzipText(compressed);
-            const data = JSON.parse(json);
 
             showConfigStatus('正在覆盖本地 IndexedDB...');
             await restoreIndexedDB(data);
+
+            showConfigStatus('正在检查缺失角色卡...');
+            await autoFillMissingCards(data);
 
             notify('✅ 恢复完成，即将刷新页面');
             showConfigStatus('✅ 拉取成功，刷新中...');
@@ -665,6 +674,288 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
             notify('❌ 拉取失败: ' + e.message, true);
             showConfigStatus('❌ 拉取失败: ' + e.message);
         }
+    }
+
+    async function pullSyncV1(cfg) {
+        const file = await getGitHubFile(cfg);
+        if (!file) {
+            throw new Error('GitHub 上未找到同步文件（旧版 snapshot.enc.json 也不存在）');
+        }
+        log('sync v1 file meta:', { size: file.size, sha: file.sha, hasContent: !!file.content });
+        const content = await getGitHubFileContent(cfg, file);
+        if (!content) throw new Error('同步文件内容为空或已损坏');
+        const payload = JSON.parse(content);
+        return decryptSyncPayload(payload, cfg.syncPassphrase);
+    }
+
+    async function pullSyncV2(cfg) {
+        showConfigStatus('发现新版同步结构，正在下载...');
+        const stateEncrypted = await downloadAndDecryptFile(cfg, SYNC_STATE_PATH);
+        const stateObj = JSON.parse(await gunzipText(await decrypt(base64ToArrayBuffer(stateEncrypted.encryptedBlob || stateEncrypted.content), cfg.syncPassphrase)));
+
+        const mapEncrypted = await downloadAndDecryptFile(cfg, SYNC_CARD_MAP_PATH);
+        // card-id-map 也加密，需要解密
+        const mapContent = await decryptGitHubEncrypted(mapEncrypted, cfg.syncPassphrase);
+        // state 中已有剥离 avatar 的 characters，无需额外处理 map
+
+        const indexEncrypted = await downloadAndDecryptFile(cfg, SYNC_CHATS_INDEX_PATH);
+        const indexContent = await decryptGitHubEncrypted(indexEncrypted, cfg.syncPassphrase);
+        const chatsIndex = JSON.parse(indexContent);
+
+        const chats = {};
+        const chatKeys = Object.keys(chatsIndex.chats || {});
+        for (let i = 0; i < chatKeys.length; i++) {
+            const key = chatKeys[i];
+            const fileName = key.replace(/^rp_hub_/, '').replace(/_/g, '-') + '.enc.json';
+            showConfigStatus(`正在下载聊天记录 (${i + 1}/${chatKeys.length})...`);
+            const chatEncrypted = await downloadAndDecryptFile(cfg, `${SYNC_CHATS_DIR}/${fileName}`);
+            const chatContent = await decryptGitHubEncrypted(chatEncrypted, cfg.syncPassphrase);
+            const chatObj = JSON.parse(chatContent);
+            chats[chatObj.key] = chatObj.value;
+        }
+
+        return { ...stateObj.state, ...chats };
+    }
+
+    async function downloadAndDecryptFile(cfg, path) {
+        const file = await getGitHubFileByPath(cfg, path);
+        if (!file) throw new Error(`同步文件缺失: ${path}`);
+        const content = await getGitHubFileContent(cfg, file);
+        return JSON.parse(content);
+    }
+
+    async function decryptGitHubEncrypted(payload, passphrase) {
+        const encrypted = base64ToArrayBuffer(payload.encryptedBlob || payload.content);
+        const compressed = await decrypt(encrypted, passphrase);
+        return gunzipText(compressed);
+    }
+
+    async function decryptSyncPayload(payload, passphrase) {
+        const encrypted = base64ToArrayBuffer(payload.encryptedBlob);
+        const compressed = await decrypt(encrypted, passphrase);
+        const json = await gunzipText(compressed);
+        return JSON.parse(json);
+    }
+
+    // ============================================================
+    // 恢复后自动补回缺失角色卡
+    // ============================================================
+    async function blobToDataUrl(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    async function writeIndexedDBKey(key, value) {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                const db = request.result;
+                const tx = db.transaction(DB_STORE, 'readwrite');
+                const store = tx.objectStore(DB_STORE);
+                store.put(value, key);
+                tx.oncomplete = () => { db.close(); resolve(); };
+                tx.onerror = () => { db.close(); reject(tx.error); };
+            };
+        });
+    }
+
+    async function readIndexedDBKey(key) {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(DB_NAME);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                const db = request.result;
+                const tx = db.transaction(DB_STORE, 'readonly');
+                const store = tx.objectStore(DB_STORE);
+                const req = store.get(key);
+                req.onsuccess = () => { db.close(); resolve(req.result); };
+                req.onerror = () => { db.close(); reject(req.error); };
+            };
+        });
+    }
+
+    function fetchCardAsBlob(url, timeout = 30000) {
+        return new Promise((resolve, reject) => {
+            if (typeof GM_xmlhttpRequest === 'function') {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url,
+                    responseType: 'blob',
+                    timeout,
+                    onload: (res) => {
+                        if (res.status === 404) return reject(new Error('404'));
+                        if (res.status >= 200 && res.status < 300 && res.response) {
+                            resolve(res.response);
+                        } else {
+                            reject(new Error('HTTP ' + res.status));
+                        }
+                    },
+                    onerror: () => reject(new Error('network')),
+                    ontimeout: () => reject(new Error('timeout')),
+                });
+            } else {
+                fetch(url, { signal: AbortSignal.timeout(timeout) })
+                    .then(async (res) => {
+                        if (res.status === 404) throw new Error('404');
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        resolve(await res.blob());
+                    })
+                    .catch(reject);
+            }
+        });
+    }
+
+    async function autoFillMissingCards(data) {
+        const cfg = getConfig();
+        const characters = data[KEY_CHARACTERS] || [];
+        if (!Array.isArray(characters) || characters.length === 0) return;
+
+        const needFill = characters.filter(char => {
+            if (!char || !char.plazaId) return false;
+            const blobKey = `rp_hub_card_blob_${char.plazaId}`;
+            const hasBlob = data[blobKey] !== undefined;
+            const avatarMissing = !char.avatar ||
+                char.avatar === '__RPHUB_SYNC_AVATAR_PLACEHOLDER__' ||
+                char.avatar.startsWith('data:image/svg+xml');
+            return avatarMissing && !hasBlob;
+        });
+
+        if (needFill.length === 0) {
+            log('No missing cards need auto-fill');
+            return;
+        }
+
+        log('Auto-fill missing cards:', needFill.length);
+        let filled = 0;
+        const failed = [];
+        const deleted = [];
+
+        for (let i = 0; i < needFill.length; i++) {
+            const char = needFill[i];
+            showConfigStatus(`正在补全角色卡 (${i + 1}/${needFill.length}): ${char.name}`);
+            try {
+                const resolved = await resolveDownload(char.plazaId, cfg);
+                let blob;
+                if (resolved.source === 'lan') {
+                    blob = await fetchCardAsBlob(resolved.url);
+                } else {
+                    blob = await fetchCardAsBlob(resolved.url);
+                }
+
+                if (!blob || blob.size === 0) throw new Error('empty');
+
+                const dataUrl = await blobToDataUrl(blob);
+                const blobKey = `rp_hub_card_blob_${char.plazaId}`;
+                await writeIndexedDBKey(blobKey, blob);
+
+                // 更新内存中的角色对象，并写回 IndexedDB
+                char.avatar = dataUrl;
+                char.__rphubSyncAvatarStripped__ = false;
+                filled++;
+            } catch (e) {
+                if (e.message === '404') {
+                    deleted.push(char);
+                    char.__rphubSyncPlazaDeleted__ = true;
+                } else {
+                    failed.push(char);
+                    log('Auto-fill failed for', char.name, char.plazaId, e.message || e);
+                }
+            }
+        }
+
+        // 把更新后的 characters 写回 IndexedDB
+        if (filled > 0 || deleted.length > 0) {
+            await writeIndexedDBKey(KEY_CHARACTERS, characters);
+        }
+
+        if (filled > 0) {
+            notify(`✅ 已自动补回 ${filled} 张角色卡`);
+        }
+        if (deleted.length > 0) {
+            notify(`⚠️ 以下角色卡已从广场删除，聊天记录已保留：${deleted.map(c => c.name).join('、')}`, true);
+        }
+        if (failed.length > 0) {
+            notify(`❌ 以下角色卡补回失败（可稍后重试）：${failed.map(c => c.name).join('、')}`, true);
+        }
+    }
+
+    // ============================================================
+    // 生命周期：检测广场角色卡更新与删除
+    // ============================================================
+    async function checkPlazaCardLifecycle() {
+        const cfg = getConfig();
+        const characters = await readIndexedDBKey(KEY_CHARACTERS);
+        if (!Array.isArray(characters)) return;
+
+        const plazaChars = characters.filter(c => c && c.plazaId);
+        if (plazaChars.length === 0) return;
+
+        const updated = [];
+        const deleted = [];
+        const checked = [];
+
+        for (const char of plazaChars.slice(0, 20)) { // 每次最多检查 20 张，避免配额
+            try {
+                const detail = await fetchPlazaCardDetail(char.plazaId, cfg);
+                checked.push(char);
+                if (!detail) {
+                    deleted.push(char);
+                } else if (detail.updated_at && char.plazaLastKnownUpdatedAt && detail.updated_at !== char.plazaLastKnownUpdatedAt) {
+                    updated.push({ char, detail });
+                }
+            } catch (e) {
+                log('Lifecycle check failed for', char.plazaId, e.message || e);
+            }
+        }
+
+        if (deleted.length > 0) {
+            notify(`⚠️ 广场已下架 ${deleted.length} 张角色卡，聊天记录已保留。`, true);
+        }
+        if (updated.length > 0) {
+            // 默认提示，不自动覆盖
+            const names = updated.map(u => u.char.name).join('、');
+            notify(`🔄 广场有以下角色卡更新：${names}，请在广场重新导入覆盖。`, true);
+        }
+    }
+
+    function fetchPlazaCardDetail(cardId, cfg) {
+        return new Promise((resolve, reject) => {
+            const url = `${cfg.sourceBaseUrl.replace(/\/+$/, '')}/api/cards/${encodeURIComponent(cardId)}`;
+            if (typeof GM_xmlhttpRequest === 'function') {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url,
+                    timeout: 15000,
+                    onload: (res) => {
+                        if (res.status === 404) return resolve(null);
+                        if (res.status >= 200 && res.status < 300) {
+                            try {
+                                resolve(JSON.parse(res.responseText));
+                            } catch (e) {
+                                reject(e);
+                            }
+                        } else {
+                            reject(new Error('HTTP ' + res.status));
+                        }
+                    },
+                    onerror: () => reject(new Error('network')),
+                    ontimeout: () => reject(new Error('timeout')),
+                });
+            } else {
+                fetch(url, { signal: AbortSignal.timeout(15000) })
+                    .then(async (res) => {
+                        if (res.status === 404) return resolve(null);
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        resolve(await res.json());
+                    })
+                    .catch(reject);
+            }
+        });
     }
 
     function validateSyncConfig(cfg) {
@@ -719,6 +1010,42 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         return base64ToString(blob.content || '');
     }
 
+    async function getGitHubFileByPath(cfg, path) {
+        try {
+            const res = await githubRequest({
+                method: 'GET',
+                url: `https://api.github.com/repos/${cfg.githubOwner}/${cfg.githubRepo}/contents/${path}?ref=${cfg.githubBranch}`,
+                headers: {
+                    Authorization: `token ${cfg.githubToken}`,
+                    Accept: 'application/vnd.github+json',
+                },
+            });
+            if (!res.responseText) return null;
+            return JSON.parse(res.responseText);
+        } catch (e) {
+            if (e.status === 404) return null;
+            throw e;
+        }
+    }
+
+    async function putGitHubFile(cfg, path, contentBase64, message, existingSha) {
+        const body = {
+            message,
+            content: contentBase64,
+        };
+        if (existingSha) body.sha = existingSha;
+        await githubRequest({
+            method: 'PUT',
+            url: `https://api.github.com/repos/${cfg.githubOwner}/${cfg.githubRepo}/contents/${path}`,
+            headers: {
+                Authorization: `token ${cfg.githubToken}`,
+                Accept: 'application/vnd.github+json',
+                'Content-Type': 'application/json',
+            },
+            data: JSON.stringify(body),
+        });
+    }
+
     // ============================================================
     // IndexedDB 读取与恢复
     // ============================================================
@@ -769,6 +1096,175 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
                 tx.onerror = () => reject(tx.error);
             };
         });
+    }
+
+    // ============================================================
+    // IndexedDB 诊断与大小预警
+    // ============================================================
+    function estimateJsonSize(value) {
+        try {
+            return JSON.stringify(value).length;
+        } catch (e) {
+            return 0;
+        }
+    }
+
+    function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+    }
+
+    function analyzeIndexedDB(data) {
+        const entries = Object.entries(data).map(([key, value]) => {
+            const size = estimateJsonSize(value);
+            return { key, size, type: typeof value };
+        });
+        entries.sort((a, b) => b.size - a.size);
+
+        const total = entries.reduce((sum, e) => sum + e.size, 0);
+        log('IndexedDB 总大小:', formatBytes(total), '共', entries.length, '个 key');
+        log('Top 10 最大 key:');
+        entries.slice(0, 10).forEach((e, i) => {
+            log(`  #${i + 1} ${e.key}: ${formatBytes(e.size)} (${e.type})`);
+        });
+
+        return { total, entries, top10: entries.slice(0, 10) };
+    }
+
+    function checkSizeWarning(totalBytes) {
+        if (totalBytes > SIZE_MAX_BYTES) {
+            return { level: 'error', message: `IndexedDB 已达 ${formatBytes(totalBytes)}，接近 GitHub 单文件限制，请尽快清理或拆分数据。` };
+        }
+        if (totalBytes > SIZE_WARN_BYTES) {
+            return { level: 'warn', message: `IndexedDB 为 ${formatBytes(totalBytes)}，建议清理旧聊天记录或开启增量同步。` };
+        }
+        return null;
+    }
+
+    // ============================================================
+    // 角色卡资产剥离：同步时不传 PNG 二进制
+    // ============================================================
+    function isAvatarDataUrl(value) {
+        return typeof value === 'string' && (
+            value.startsWith('data:image/png;base64,') ||
+            value.startsWith('data:image/jpeg;base64,') ||
+            value.startsWith('data:image/webp;base64,') ||
+            value.startsWith('blob:')
+        );
+    }
+
+    function stripAvatar(value) {
+        if (isAvatarDataUrl(value)) {
+            return '__RPHUB_SYNC_AVATAR_PLACEHOLDER__';
+        }
+        return value;
+    }
+
+    function stripCharacterAvatars(characters) {
+        if (!Array.isArray(characters)) return characters;
+        return characters.map(char => {
+            if (!char || typeof char !== 'object') return char;
+            const clone = { ...char };
+            if (isAvatarDataUrl(clone.avatar)) {
+                clone.avatar = '__RPHUB_SYNC_AVATAR_PLACEHOLDER__';
+                clone.__rphubSyncAvatarStripped__ = true;
+            }
+            // 历史兼容：有些版本可能把头像存在其他字段
+            ['avatarUrl', 'profileImage', 'image'].forEach(field => {
+                if (isAvatarDataUrl(clone[field])) {
+                    clone[field] = '__RPHUB_SYNC_AVATAR_PLACEHOLDER__';
+                    clone.__rphubSyncAvatarStripped__ = true;
+                }
+            });
+            return clone;
+        });
+    }
+
+    function buildCardIdMap(characters) {
+        const map = {};
+        if (!Array.isArray(characters)) return map;
+        characters.forEach(char => {
+            if (char && char.uuid && char.plazaId) {
+                map[char.uuid] = char.plazaId;
+            }
+        });
+        return map;
+    }
+
+    function classifyIndexedDBKeys(data) {
+        const state = {};
+        const chats = {};
+        const chatUuids = new Set();
+
+        for (const [key, value] of Object.entries(data)) {
+            if (key === KEY_CHARACTERS) {
+                state[key] = stripCharacterAvatars(value);
+            } else if (key.startsWith(KEY_CHAT_PREFIX)) {
+                chats[key] = value;
+                const uuid = key.slice(KEY_CHAT_PREFIX.length);
+                chatUuids.add(uuid);
+            } else if (key.startsWith(KEY_MEMORIES_PREFIX) || key.startsWith(KEY_CLASSIC_MEMORIES_PREFIX)) {
+                // memories 通常不大，但按角色拆分便于增量
+                chats[key] = value;
+            } else {
+                state[key] = value;
+            }
+        }
+        return { state, chats, chatUuids: Array.from(chatUuids) };
+    }
+
+    // ============================================================
+    // 同步 payload 准备（v2 多文件结构）
+    // ============================================================
+    async function prepareSyncPayload(data) {
+        const { state, chats } = classifyIndexedDBKeys(data);
+        const characters = state[KEY_CHARACTERS] || [];
+        const cardIdMap = buildCardIdMap(characters);
+
+        // 聊天索引：记录每个聊天文件的大小，便于恢复时判断
+        const chatsIndex = {};
+        const chatEntries = Object.entries(chats);
+
+        const files = [];
+        const passphrase = getConfig().syncPassphrase;
+
+        // 辅助：把加密后的 ArrayBuffer 包装成与 v1 兼容的 JSON payload
+        async function makeEncryptedPayload(plaintextJson) {
+            const encrypted = await encrypt(await gzipText(plaintextJson), passphrase);
+            return stringToBase64(JSON.stringify({
+                version: 2,
+                encryptedBlob: arrayBufferToBase64(encrypted),
+                encoding: 'base64+aes-gcm+gzip',
+            }));
+        }
+
+        // state.enc.json
+        const stateJson = JSON.stringify({
+            version: 2,
+            exportedAt: Date.now(),
+            deviceId: await getDeviceId(),
+            state,
+        });
+        files.push({ path: SYNC_STATE_PATH, content: await makeEncryptedPayload(stateJson) });
+
+        // card-id-map.enc.json
+        const mapJson = JSON.stringify(cardIdMap);
+        files.push({ path: SYNC_CARD_MAP_PATH, content: await makeEncryptedPayload(mapJson) });
+
+        // chats/<key>.enc.json
+        for (const [key, value] of chatEntries) {
+            const fileName = key.replace(/^rp_hub_/, '').replace(/_/g, '-') + '.enc.json';
+            const chatJson = JSON.stringify({ version: 2, key, value });
+            files.push({ path: `${SYNC_CHATS_DIR}/${fileName}`, content: await makeEncryptedPayload(chatJson) });
+            chatsIndex[key] = { size: chatJson.length };
+        }
+
+        // chats-index.enc.json
+        const indexJson = JSON.stringify({ version: 2, exportedAt: Date.now(), chats: chatsIndex });
+        files.push({ path: SYNC_CHATS_INDEX_PATH, content: await makeEncryptedPayload(indexJson) });
+
+        return { files, meta: { stateSize: stateJson.length, chatCount: chatEntries.length, cardCount: characters.length } };
     }
 
     // ============================================================
@@ -1041,6 +1537,27 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
                 }
             }
 
+            // 缓存卡片详情，用于 postMessage 注入 plazaId
+            const detailMatch = urlStr.match(/\/api\/cards\/([^/?#\s]+)\/?$/);
+            if (detailMatch && method === 'GET') {
+                const cardId = decodeURIComponent(detailMatch[1]);
+                try {
+                    const response = await originalFetch.call(this, input, init);
+                    const clone = response.clone ? response.clone() : response;
+                    clone.json().then((json) => {
+                        if (json && (json.id || json.uuid)) {
+                            plazaCardDetailCache[cardId] = {
+                                name: json.name || json.title || null,
+                                updatedAt: json.updated_at || json.updatedAt || null,
+                            };
+                        }
+                    }).catch(() => { });
+                    return response;
+                } catch (e) {
+                    return originalFetch.call(this, input, init);
+                }
+            }
+
             return originalFetch.call(this, input, init);
         };
     }
@@ -1128,6 +1645,9 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         });
     }
 
+    // 广场卡片详情缓存，用于点击下载时向 RP-Hub 父页面发送 plazaId
+    const plazaCardDetailCache = {};
+
     // ---------- 下载按钮点击挟持（捕获阶段，优先于 Vue 处理器） ----------
     // 源站在次数为 0 时连 POST 都不发直接 toast"下载次数不足"，
     // 所以必须在点击层拦截并走自己的直链下载。
@@ -1144,8 +1664,27 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
             e.preventDefault();
             e.stopImmediatePropagation();
             log('Hijacked download click for card:', cardId);
+
+            // 向 RP-Hub 父页面广播该卡信息，便于导入时注入 plazaId
+            notifyParentPlazaCard(cardId);
+
             doDirectDownload(cardId);
         }, true);
+    }
+
+    function notifyParentPlazaCard(cardId) {
+        try {
+            if (window.self === window.top) return; // 不是 iframe 则不发送
+            const detail = plazaCardDetailCache[cardId] || {};
+            window.parent.postMessage({
+                type: 'RPHUB_PLAZA_CARD',
+                cardId,
+                name: detail.name || null,
+                updatedAt: detail.updatedAt || null,
+            }, 'https://blycr.github.io');
+        } catch (e) {
+            log('notifyParentPlazaCard failed:', e);
+        }
     }
 
     function findCardIdNearElement(el) {

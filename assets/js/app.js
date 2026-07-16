@@ -17,6 +17,19 @@ createApp({
         CustomSelect: window.RPHubCustomSelect
     },
     setup() {
+        // ============================================================
+        // RP-Hub-Sync 最小补丁：接收广场 iframe 发来的 plaza cardId
+        // ============================================================
+        window.__rphub_pending_plaza_card__ = null;
+        window.addEventListener('message', (event) => {
+            if (event.origin !== 'https://rphforum.zeabur.app') return;
+            if (event.data && event.data.type === 'RPHUB_PLAZA_CARD') {
+                window.__rphub_pending_plaza_card__ = event.data;
+                console.log('[RP-Hub Sync] pending plaza card:', event.data.cardId, event.data.name);
+            }
+        });
+        // ============================================================
+
         const cardUtils = new Proxy({}, {
             get(_, key) {
                 const utils = window.RPHubCardUtils;
@@ -9998,6 +10011,27 @@ image###生成的提示词###
                         uuid: generateUUID(),
                         createdAt: Date.now()
                     };
+
+                    // ============================================================
+                    // RP-Hub-Sync 最小补丁：注入 plaza cardId
+                    // ============================================================
+                    const pending = window.__rphub_pending_plaza_card__;
+                    if (pending && pending.cardId) {
+                        const fileName = file ? file.name.replace(/\.png$/i, '') : '';
+                        const matchByName = pending.name && (
+                            pending.name === name ||
+                            pending.name === fileName
+                        );
+                        if (matchByName) {
+                            char.plazaId = pending.cardId;
+                            char.plazaImportedAt = Date.now();
+                            char.plazaLastKnownUpdatedAt = pending.updatedAt || null;
+                            char.isLocal = false;
+                            window.__rphub_pending_plaza_card__ = null;
+                            console.log('[RP-Hub Sync] injected plazaId for', name, pending.cardId);
+                        }
+                    }
+                    // ============================================================
 
                     // --- Process World Info Entries ---
                     let entries = [];
