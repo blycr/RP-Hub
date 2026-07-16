@@ -1,0 +1,75 @@
+name: Sync upstream and deploy Pages
+
+on:
+  # 每天 UTC 00:00 检查一次上游更新
+  # 时区换算：北京时间每天 08:00
+  schedule:
+    - cron: '0 0 * * *'
+
+  # 允许手动触发
+  workflow_dispatch:
+
+# 权限：只需要读写本仓库内容
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# 防止并发冲突：新的同步开始时，取消正在运行的旧同步
+concurrency:
+  group: 'sync-upstream'
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote and fetch
+        run: |
+          git remote add upstream https://github.com/STA1N156/RP-Hub.git
+          git fetch upstream main --depth=1
+
+      - name: Check for upstream updates
+        id: check
+        run: |
+          UPSTREAM=$(git rev-parse upstream/main)
+          ORIGIN=$(git rev-parse origin/main)
+          echo "upstream=$UPSTREAM"
+          echo "origin=$ORIGIN"
+          if [ "$UPSTREAM" = "$ORIGIN" ]; then
+            echo "No updates from upstream."
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Upstream has new commits."
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream changes
+        if: steps.check.outputs.updated == 'true'
+        run: |
+          # 优先采用 upstream 的改动，避免你本地新增的文件（如本 workflow）产生冲突
+          git merge upstream/main -m "Sync upstream $(date -u +%Y-%m-%d)" -X theirs
+
+      - name: Push to origin
+        if: steps.check.outputs.updated == 'true'
+        run: |
+          git push origin main
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.check.outputs.updated }}" = "true" ]; then
+            echo "✅ Upstream synced and pushed. GitHub Pages will auto-deploy."
+          else
+            echo "⏭️ No upstream changes. Skipped push to save quota."
+          fi
