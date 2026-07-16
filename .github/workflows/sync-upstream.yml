@@ -96,17 +96,12 @@ jobs:
         run: |
           git push origin main
 
-      - name: Push to origin
-        if: steps.check.outputs.updated == 'true'
-        run: |
-          git push origin main
-
       - name: Summary
         run: |
           if [ "${{ steps.check.outputs.updated }}" = "true" ]; then
             echo "✅ Upstream synced and pushed. GitHub Pages will auto-deploy."
             if [ "${{ steps.merge.outputs.patch_status }}" = "lost" ]; then
-              echo "⚠️ plazaId patch lost. Please re-apply manually following README.md instructions."
+              echo "ℹ️ plazaId patch was auto re-applied by scripts/reapply-plazaId-patch.js from RP-Hub-Sync."
             fi
           else
             echo "⏭️ No upstream changes. Skipped push to save quota."
