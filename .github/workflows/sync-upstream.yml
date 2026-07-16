@@ -78,7 +78,7 @@ jobs:
           cp /tmp/rphub-backup/.gitignore . 2>/dev/null || true
 
           # 检查 app.js 是否还包含补丁
-          if grep -q "RPHUB_PLAZA_CARD" assets/js/app.js && grep -q "embeddingApiUrl" assets/js/app.js && grep -q "classicApiUrl" assets/js/app.js; then
+          if grep -q "RPHUB_PLAZA_CARD" assets/js/app.js && grep -q "getApiConfigForModel" assets/js/app.js; then
             echo "patch_status=ok" >> "$GITHUB_OUTPUT"
           else
             echo "patch_status=lost" >> "$GITHUB_OUTPUT"
@@ -96,11 +96,8 @@ jobs:
           curl -sL https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-plazaId-patch.js -o /tmp/reapply-plazaId-patch.js
           node /tmp/reapply-plazaId-patch.js assets/js/app.js
 
-          curl -sL https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-embedding-provider-patch.js -o /tmp/reapply-embedding-provider-patch.js
-          node /tmp/reapply-embedding-provider-patch.js .
-
-          curl -sL https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-classic-provider-patch.js -o /tmp/reapply-classic-provider-patch.js
-          node /tmp/reapply-classic-provider-patch.js .
+          curl -sL https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-multi-provider-patch.js -o /tmp/reapply-multi-provider-patch.js
+          node /tmp/reapply-multi-provider-patch.js .
 
           git add assets/js/app.js index.html
           git commit -m "chore: auto re-apply patches after upstream merge" || true
