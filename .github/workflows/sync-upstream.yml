@@ -9,6 +9,11 @@ on:
   # 允许手动触发
   workflow_dispatch:
 
+  # 每次推送到 main 分支时触发（本地修改代码后推送）
+  push:
+    branches:
+      - main
+
 # 权限：只需要读写本仓库内容
 permissions:
   contents: write
@@ -23,6 +28,8 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # 防止 workflow 自己推送后再次触发（避免无限循环）
+    if: github.actor != 'github-actions[bot]'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
