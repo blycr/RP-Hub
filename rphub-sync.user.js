@@ -813,24 +813,37 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     async function autoFillMissingCards(data) {
         const cfg = getConfig();
         const characters = data[KEY_CHARACTERS] || [];
-        if (!Array.isArray(characters) || characters.length === 0) return;
+        if (!Array.isArray(characters) || characters.length === 0) {
+            log('autoFill: no characters');
+            return;
+        }
 
         const needFill = characters.filter(char => {
             if (!char || !char.plazaId) return false;
-            const blobKey = `rp_hub_card_blob_${char.plazaId}`;
-            const hasBlob = data[blobKey] !== undefined;
             const avatarMissing = !char.avatar ||
                 char.avatar === '__RPHUB_SYNC_AVATAR_PLACEHOLDER__' ||
                 char.avatar.startsWith('data:image/svg+xml');
-            return avatarMissing && !hasBlob;
+            return avatarMissing;
         });
+
+        log('autoFill candidates:', needFill.length, 'plazaIds:', needFill.map(c => c.plazaId));
 
         if (needFill.length === 0) {
             log('No missing cards need auto-fill');
             return;
         }
 
-        log('Auto-fill missing cards:', needFill.length);
+        // 预取 LAN manifest（如果启用）
+        let manifest = null;
+        if (cfg.enableLan && cfg.lanBaseUrl) {
+            try {
+                manifest = await getLanManifest(cfg);
+                log('autoFill LAN manifest entries:', manifest ? Object.keys(manifest).length : 0);
+            } catch (e) {
+                log('autoFill LAN manifest failed:', e.message || e);
+            }
+        }
+
         let filled = 0;
         const failed = [];
         const deleted = [];
@@ -838,39 +851,66 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         for (let i = 0; i < needFill.length; i++) {
             const char = needFill[i];
             showConfigStatus(`正在补全角色卡 (${i + 1}/${needFill.length}): ${char.name}`);
+            log('autoFill trying', char.name, char.plazaId);
             try {
-                const resolved = await resolveDownload(char.plazaId, cfg);
-                let blob;
-                if (resolved.source === 'lan') {
-                    blob = await fetchCardAsBlob(resolved.url);
-                } else {
-                    blob = await fetchCardAsBlob(resolved.url);
+                let blob = null;
+                let source = '';
+
+                // 1. 优先局域网：直接用 plazaId 查 manifest 文件名，避免跨 iframe blob URL
+                if (manifest && manifest[char.plazaId] && manifest[char.plazaId].filename) {
+                    const filename = manifest[char.plazaId].filename;
+                    const lanUrl = `${cfg.lanBaseUrl.replace(/\/+$/, '')}/api/image/${encodeURIComponent(filename)}`;
+                    try {
+                        blob = await fetchCardAsBlob(lanUrl);
+                        if (blob && blob.size > 0) {
+                            source = 'lan';
+                            log('autoFill LAN hit:', char.name, filename);
+                        }
+                    } catch (e) {
+                        log('autoFill LAN failed for', char.name, e.message || e);
+                    }
                 }
 
-                if (!blob || blob.size === 0) throw new Error('empty');
+                // 2. 回退源站直链
+                if (!blob) {
+                    const sourceUrl = cfg.sourceDownloadTemplate.replace('{id}', encodeURIComponent(char.plazaId));
+                    try {
+                        blob = await fetchCardAsBlob(sourceUrl);
+                        if (blob && blob.size > 0) {
+                            source = 'source';
+                            log('autoFill source hit:', char.name);
+                        }
+                    } catch (e) {
+                        if (e.message === '404') {
+                            deleted.push(char);
+                            char.__rphubSyncPlazaDeleted__ = true;
+                            log('autoFill source 404 (deleted):', char.name);
+                            continue;
+                        }
+                        throw e;
+                    }
+                }
+
+                if (!blob || blob.size === 0) throw new Error('empty blob');
 
                 const dataUrl = await blobToDataUrl(blob);
                 const blobKey = `rp_hub_card_blob_${char.plazaId}`;
                 await writeIndexedDBKey(blobKey, blob);
 
-                // 更新内存中的角色对象，并写回 IndexedDB
+                // 更新内存中的角色对象
                 char.avatar = dataUrl;
                 char.__rphubSyncAvatarStripped__ = false;
                 filled++;
             } catch (e) {
-                if (e.message === '404') {
-                    deleted.push(char);
-                    char.__rphubSyncPlazaDeleted__ = true;
-                } else {
-                    failed.push(char);
-                    log('Auto-fill failed for', char.name, char.plazaId, e.message || e);
-                }
+                failed.push(char);
+                log('Auto-fill failed for', char.name, char.plazaId, e.message || e);
             }
         }
 
         // 把更新后的 characters 写回 IndexedDB
         if (filled > 0 || deleted.length > 0) {
             await writeIndexedDBKey(KEY_CHARACTERS, characters);
+            log('autoFill wrote characters back, filled:', filled, 'deleted:', deleted.length);
         }
 
         if (filled > 0) {
