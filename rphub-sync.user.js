@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RP-Hub Sync & Plaza LAN Hijack
 // @namespace    rphub
-// @version      1.3.0
+// @version      1.3.1
 // @description  RP-Hub 跨设备 GitHub 同步 + 广场 LAN 优先/源站兜底资源挟持 + 下载次数绕过（支持 Tampermonkey/Violentmonkey/Firefox Mobile）
 // @author       You
 // @match        https://*.github.io/RP-Hub/*
@@ -92,7 +92,21 @@
         setTimeout(() => mo.disconnect(), 20000);
     }
 
+    // favicon：站点根 favicon.ico 不存在会 404；以 data URI 注入 link，零网络请求。
+    // 仓库根目录另有 favicon.svg 实体文件（新文件，上游合并不会冲突丢失）。
+    const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="2" y="2" width="60" height="60" rx="14" fill="#ffffff" stroke="#e5e7eb" stroke-width="2"/><text x="32" y="41" font-family="'Segoe UI',system-ui,-apple-system,Arial,sans-serif" font-size="26" font-weight="700" fill="#111827" text-anchor="middle" letter-spacing="1">RP</text></svg>`;
+
+    function injectFavicon() {
+        if (document.querySelector('link[rel~="icon"]')) return;
+        const link = document.createElement('link');
+        link.rel = 'icon';
+        link.type = 'image/svg+xml';
+        link.href = 'data:image/svg+xml,' + encodeURIComponent(FAVICON_SVG);
+        (document.head || document.documentElement).appendChild(link);
+    }
+
     if (isRpHub) {
+        injectFavicon();
         onDomReady(initRpHubSync);
     } else if (isPlaza) {
         if (inCrossOriginSubframe) suppressIframeAutofocus();
