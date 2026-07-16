@@ -937,7 +937,9 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
 
     async function autoFillMissingCards(data) {
         const cfg = getConfig();
-        const characters = data[KEY_CHARACTERS] || [];
+        // 注意：data 是拉取下来的原始数据，repairMissingPlazaIds 可能已把 plazaId 写回 IndexedDB，
+        // 所以这里必须重新从 IndexedDB 读取 characters，否则旧数据没有 plazaId 会被过滤掉。
+        const characters = await readIndexedDBKey(KEY_CHARACTERS);
         if (!Array.isArray(characters) || characters.length === 0) {
             log('autoFill: no characters');
             return;
