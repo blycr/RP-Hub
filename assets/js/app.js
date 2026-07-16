@@ -554,6 +554,8 @@ createApp({
             customApiUrl2: '',
             embeddingApiUrl: '',
             embeddingApiKey: '',
+            classicApiUrl: '',
+            classicApiKey: '',
             model: DEFAULT_API_CONFIG.qualityModel,
             contextSize: MAX_CONTEXT_SIZE,
             temperature: 1.0,
@@ -6648,7 +6650,10 @@ ${content}
 
         const requestClassicMemorySummary = async (job, signal) => {
             const model = String(memorySettings.classicModel || '').trim();
-            if (!settings.apiUrl || !settings.apiKey) throw new Error('请先配置 API 地址和 Key');
+            // 支持独立的 classic 供应商配置，未配置时回退到全局配置
+            const apiUrl = (settings.classicApiUrl || settings.apiUrl || '').replace(/\s+/g, '');
+            const apiKey = (settings.classicApiKey || settings.apiKey || '').trim();
+            if (!apiUrl || !apiKey) throw new Error('请先配置 API 地址和 Key');
             if (!model) throw new Error('请先选择总结模式副模型');
 
             const requestMessages = [{
@@ -6680,11 +6685,13 @@ ${content}
                 content: `上方最多八条对话消息是待整理资料。请只总结标记为“最新对话：唯一总结目标｜第 ${job.turn} 轮”的最后一组，并且只输出总结正文。`
             });
 
-            const response = await fetch(getOpenAICompatUrl('chat/completions'), {
+            const baseUrl = apiUrl.replace(/\/+$/, '');
+            const chatUrl = baseUrl.endsWith('/v1') ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
+            const response = await fetch(chatUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${settings.apiKey}`
+                    'Authorization': `Bearer ${apiKey}`
                 },
                 body: JSON.stringify({
                     model,
