@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RP-Hub Sync & Plaza LAN Hijack
 // @namespace    rphub
-// @version      2.0.0
+// @version      2.0.2
 // @description  RP-Hub 跨设备 GitHub 同步（增量/分片/角色卡剥离）+ 广场 LAN 优先/源站兜底资源挟持 + 下载次数绕过（支持 Tampermonkey/Violentmonkey/Firefox Mobile）
 // @author       You
 // @match        https://*.github.io/RP-Hub/*
