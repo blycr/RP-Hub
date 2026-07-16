@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         RP-Hub Sync & Plaza LAN Hijack
 // @namespace    rphub
-// @version      1.1.0
-// @description  RP-Hub 跨设备 GitHub 同步 + 广场 LAN 优先/源站兜底资源挟持（支持 Tampermonkey/Violentmonkey/Firefox Mobile）
+// @version      1.2.0
+// @description  RP-Hub 跨设备 GitHub 同步 + 广场 LAN 优先/源站兜底资源挟持 + 下载次数绕过（支持 Tampermonkey/Violentmonkey/Firefox Mobile）
 // @author       You
 // @match        https://*.github.io/RP-Hub/*
 // @match        https://rphforum.zeabur.app/*
@@ -13,7 +13,10 @@
 // @grant        GM_notification
 // @grant        GM_openInTab
 // @grant        unsafeWindow
-// @run-at       document-end
+// @connect      api.github.com
+// @connect      192.168.31.40
+// @connect      *
+// @run-at       document-start
 // ==/UserScript==
 
 (function () {
@@ -33,8 +36,16 @@
     const isRpHub = /github\.io\/RP-Hub/.test(location.href);
     const isPlaza = location.hostname.includes('rphforum.zeabur.app');
 
+    function onDomReady(fn) {
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', fn, { once: true });
+        } else {
+            fn();
+        }
+    }
+
     if (isRpHub) {
-        initRpHubSync();
+        onDomReady(initRpHubSync);
     } else if (isPlaza) {
         initPlazaHijack();
     }
@@ -54,6 +65,14 @@
             // 广场资源配置
             lanBaseUrl: GM_getValue('plaza_lan_url', 'http://192.168.31.40:8765'),
             sourceBaseUrl: GM_getValue('plaza_source_url', 'https://rphforum.zeabur.app'),
+            sourceDownloadTemplate: (() => {
+                const v = GM_getValue('plaza_source_download_template', '');
+                // 旧默认值（错误的 404 端点）自动迁移到已验证的直链模板
+                if (!v || v === 'https://rphforum.zeabur.app/api/cards/{id}/download') {
+                    return 'https://rphforum.zeabur.app/api/cards/{id}/download/file';
+                }
+                return v;
+            })(),
             enableLan: GM_getValue('plaza_enable_lan', true),
 
             // 调试
@@ -125,6 +144,11 @@
                 <input type="text" id="rphub-cfg-lan" value="${escapeHtml(cfg.lanBaseUrl)}" style="width:100%;padding:6px;border:1px solid #d1d5db;border-radius:6px;box-sizing:border-box;">
                 <div style="font-size:11px;color:#6b7280;margin-top:4px;">例如：http://192.168.31.40:8765</div>
             </div>
+            <div style="margin-bottom:10px;">
+                <label style="display:block;margin-bottom:4px;color:#374151;">源站下载 URL 模板</label>
+                <input type="text" id="rphub-cfg-download-template" value="${escapeHtml(cfg.sourceDownloadTemplate)}" style="width:100%;padding:6px;border:1px solid #d1d5db;border-radius:6px;box-sizing:border-box;">
+                <div style="font-size:11px;color:#6b7280;margin-top:4px;">用 {id} 占位，例如：https://rphforum.zeabur.app/api/cards/{id}/download/file</div>
+            </div>
             <div style="margin-bottom:12px;">
                 <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
                     <input type="checkbox" id="rphub-cfg-enablelan" ${cfg.enableLan ? 'checked' : ''}>
@@ -161,6 +185,7 @@
         setConfig('github_repo', document.getElementById('rphub-cfg-repo').value.trim() || 'RP-Hub-Sync');
         setConfig('sync_passphrase', document.getElementById('rphub-cfg-passphrase').value);
         setConfig('plaza_lan_url', document.getElementById('rphub-cfg-lan').value.trim());
+        setConfig('plaza_source_download_template', document.getElementById('rphub-cfg-download-template').value.trim() || 'https://rphforum.zeabur.app/api/cards/{id}/download/file');
         setConfig('plaza_enable_lan', document.getElementById('rphub-cfg-enablelan').checked);
         showConfigStatus('✅ 配置已保存');
     }
@@ -169,12 +194,12 @@
         const cfg = getConfig();
         showConfigStatus('正在测试 LAN...');
         try {
-            const res = await fetch(`${cfg.lanBaseUrl}/api/status`, { cache: 'no-cache', signal: AbortSignal.timeout(5000) });
-            if (res.ok) {
-                const data = await res.json();
-                showConfigStatus(`✅ LAN 可达，文件数：${data.pic?.length || 'unknown'}`);
+            const res = await lanRequest(`${cfg.lanBaseUrl.replace(/\/+$/, '')}/api/status`, { timeout: 5000 });
+            if (res && res.status === 200) {
+                const data = JSON.parse(res.responseText);
+                showConfigStatus(`✅ LAN 可达，文件数：${data.pic ? data.pic.length : 'unknown'}`);
             } else {
-                showConfigStatus(`❌ LAN 返回 ${res.status}`);
+                showConfigStatus(`❌ LAN 返回 ${res && res.status}`);
             }
         } catch (e) {
             showConfigStatus(`❌ LAN 不可达：${e.message}`);
@@ -581,14 +606,51 @@
     }
 
     // ============================================================
-    // 第 2 部分：广场 Hijack（LAN 优先 + 源站直链兜底）
+    // 第 2 部分：广场 Hijack（LAN 优先 + 源站兜底 + 下载次数绕过）
     // ============================================================
+    const TRANSPARENT_PX = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+    // 只识别"资源类"URL：缩略图 / 预览图 / 头像 / 下载；
+    // 其余 API（卡片详情 /api/cards/<id>、/comments、/view、/settings 等）一律放行不拦截
+    function classifyPlazaUrl(rawUrl) {
+        if (!rawUrl) return null;
+        let path;
+        try {
+            path = new URL(rawUrl, location.href).pathname;
+        } catch (e) {
+            return null;
+        }
+        const m = path.match(/\/api\/cards\/([^/?#\s]+)(?:\/([^/?#\s]+))?\/?$/);
+        if (!m) return null;
+        const cardId = decodeURIComponent(m[1]);
+        const action = m[2] || '';
+        if (action === 'thumbnail' || action === 'preview-image' || action === 'avatar') {
+            return { type: 'image', cardId, action };
+        }
+        if (action === 'download') {
+            return { type: 'download-api', cardId };
+        }
+        return null;
+    }
+
+    function absolutize(url) {
+        try {
+            return new URL(url, location.href).href;
+        } catch (e) {
+            return url;
+        }
+    }
+
     function initPlazaHijack() {
         log('Plaza hijack initialized');
-        injectFloatingPlazaButton();
+        // 网络与图片钩子必须在页面脚本渲染前装好（document-start）
         hookNetworkRequests();
         hookImageSrc();
         observeDownloadButtons();
+        onDomReady(() => {
+            injectFloatingPlazaButton();
+            injectSourceStyle();
+        });
     }
 
     function injectFloatingPlazaButton() {
@@ -615,216 +677,340 @@
         document.body.appendChild(btn);
     }
 
+    function injectSourceStyle() {
+        const style = document.createElement('style');
+        style.textContent = `
+            [data-rphub-source="lan"] { outline: 2px solid #22c55e !important; outline-offset: -2px; }
+            [data-rphub-source="source"] { outline: 2px solid #f59e0b !important; outline-offset: -2px; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // ---------- 网络请求挟持：仅拦截 POST /api/cards/<id>/download ----------
+    // 源站的"下载次数"鉴权只是 UI 层面的 POST，角色卡文件本身可匿名直链下载。
+    // 这里直接构造 download_url 返回给页面自己的 downloadCard 流程。
     function hookNetworkRequests() {
-        const cfg = getConfig();
         const originalFetch = unsafeWindow.fetch;
+        if (!originalFetch) return;
 
-        unsafeWindow.fetch = async function (url, options) {
-            const urlStr = typeof url === 'string' ? url : url?.url || '';
-            log('fetch intercepted:', urlStr);
-            const resolved = await resolveUrl(urlStr, cfg);
-            if (resolved) {
-                log('Redirect fetch:', urlStr, '->', resolved.url, `(source: ${resolved.source})`);
-                return originalFetch.call(this, resolved.url, options);
+        unsafeWindow.fetch = async function (input, init) {
+            const urlStr = typeof input === 'string' ? input : (input && input.url) || '';
+            const method = ((init && init.method) || (typeof input === 'object' && input && input.method) || 'GET').toUpperCase();
+            const cls = classifyPlazaUrl(urlStr);
+
+            if (cls && cls.type === 'download-api' && method === 'POST') {
+                log('Hijack download POST:', cls.cardId);
+                try {
+                    const resolved = await resolveDownload(cls.cardId, getConfig());
+                    return fakeJsonResponse({ download_url: resolved.url, download_counted: false });
+                } catch (e) {
+                    log('Download resolve failed, fallback to source template:', e.message || e);
+                    const template = getConfig().sourceDownloadTemplate;
+                    return fakeJsonResponse({
+                        download_url: template.replace('{id}', encodeURIComponent(cls.cardId)),
+                        download_counted: false,
+                    });
+                }
             }
-            return originalFetch.call(this, url, options);
-        };
 
-        const originalOpen = XMLHttpRequest.prototype.open;
-        const originalSend = XMLHttpRequest.prototype.send;
-
-        XMLHttpRequest.prototype.open = function (method, url, async, user, password) {
-            this._rphub_url = url;
-            this._rphub_method = method;
-            return originalOpen.call(this, method, url, async, user, password);
-        };
-
-        XMLHttpRequest.prototype.send = async function (body) {
-            const url = this._rphub_url;
-            const method = this._rphub_method || 'GET';
-            log('XHR intercepted:', url);
-            const resolved = await resolveUrl(url, cfg);
-            if (resolved && originalOpen) {
-                log('Redirect XHR:', url, '->', resolved.url, `(source: ${resolved.source})`);
-                originalOpen.call(this, method, resolved.url, true);
-            }
-            return originalSend.call(this, body);
+            return originalFetch.call(this, input, init);
         };
     }
 
-    function hookImageSrc() {
-        const cfg = getConfig();
-
-        const rewrite = async (img) => {
-            const src = img.getAttribute('src');
-            if (!src || img.dataset.rphubProcessed) return;
-            img.dataset.rphubProcessed = 'true';
-            const resolved = await resolveUrl(src, cfg);
-            if (resolved) {
-                log('Redirect img:', src, '->', resolved.url);
-                img.src = resolved.url;
-                img.dataset.rphubSource = resolved.source;
-            }
+    // 跨隔离世界最稳妥的伪 Response（页面侧只用 resp.ok / resp.json()）
+    function fakeJsonResponse(payload) {
+        const text = JSON.stringify(payload);
+        return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => JSON.parse(text),
+            text: async () => text,
         };
+    }
 
-        document.querySelectorAll('img').forEach(rewrite);
-        const observer = new MutationObserver((mutations) => {
-            mutations.forEach((m) => {
-                m.addedNodes.forEach((node) => {
-                    if (node.tagName === 'IMG') rewrite(node);
-                    if (node.querySelectorAll) {
-                        node.querySelectorAll('img').forEach(rewrite);
+    // ---------- 图片挟持：缩略图/预览图 LAN 优先 ----------
+    // 直接 hook HTMLImageElement.prototype.src，覆盖 Vue 属性赋值与 new Image() 两条路径；
+    // LAN 命中时换成 blob: URL，规避 HTTPS 页面加载 HTTP 局域网资源的混合内容限制。
+    function hookImageSrc() {
+        const proto = unsafeWindow.HTMLImageElement && unsafeWindow.HTMLImageElement.prototype;
+        if (proto) {
+            const desc = Object.getOwnPropertyDescriptor(proto, 'src');
+            if (desc && desc.set && desc.get) {
+                Object.defineProperty(proto, 'src', {
+                    configurable: true,
+                    enumerable: desc.enumerable,
+                    get: function () {
+                        return desc.get.call(this);
+                    },
+                    set: function (value) {
+                        const str = String(value);
+                        const cls = classifyPlazaUrl(str);
+                        if (!cls || cls.type !== 'image') {
+                            desc.set.call(this, value);
+                            return;
+                        }
+                        const reqId = (this._rphubReq = (this._rphubReq || 0) + 1);
+                        try { this.dataset.rphubCardId = cls.cardId; } catch (e) { /* ignore */ }
+                        desc.set.call(this, TRANSPARENT_PX);
+                        resolveImage(cls, str, getConfig()).then((resolved) => {
+                            if (this._rphubReq !== reqId) return;
+                            desc.set.call(this, resolved.url);
+                            try { this.dataset.rphubSource = resolved.source; } catch (e) { /* ignore */ }
+                            if (resolved.url.startsWith('blob:')) {
+                                const u = resolved.url;
+                                // 解码渲染完成后即可回收 blob，避免长列表占用内存
+                                this.addEventListener('load', () => URL.revokeObjectURL(u), { once: true });
+                                this.addEventListener('error', () => URL.revokeObjectURL(u), { once: true });
+                            }
+                        }).catch(() => {
+                            if (this._rphubReq !== reqId) return;
+                            desc.set.call(this, absolutize(str));
+                            try { this.dataset.rphubSource = 'source'; } catch (e) { /* ignore */ }
+                        });
+                    },
+                });
+                log('Image src hook installed');
+            }
+        }
+
+        // MutationObserver 兜底：setAttribute('src') 路径与初始已有 img
+        onDomReady(() => {
+            const sweep = (img) => {
+                if (!img.getAttribute) return;
+                const src = img.getAttribute('src');
+                if (!src || img.dataset.rphubSource) return;
+                const cls = classifyPlazaUrl(src);
+                if (!cls || cls.type !== 'image') return;
+                img.src = src; // 触发上面的 setter 钩子
+            };
+            document.querySelectorAll('img').forEach(sweep);
+            const observer = new MutationObserver((mutations) => {
+                mutations.forEach((m) => {
+                    if (m.type === 'attributes') {
+                        if (m.target.tagName === 'IMG') sweep(m.target);
+                        return;
                     }
+                    m.addedNodes.forEach((node) => {
+                        if (node.tagName === 'IMG') sweep(node);
+                        if (node.querySelectorAll) node.querySelectorAll('img').forEach(sweep);
+                    });
                 });
             });
+            observer.observe(document.documentElement, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['src'],
+            });
         });
-        observer.observe(document.body, { childList: true, subtree: true });
     }
 
+    // ---------- 下载按钮点击挟持（捕获阶段，优先于 Vue 处理器） ----------
+    // 源站在次数为 0 时连 POST 都不发直接 toast"下载次数不足"，
+    // 所以必须在点击层拦截并走自己的直链下载。
     function observeDownloadButtons() {
-        // 在卡片容器上监听点击，尝试识别下载按钮
-        document.addEventListener('click', async (e) => {
-            const target = e.target.closest('button, a, [role="button"]');
+        document.addEventListener('click', (e) => {
+            const target = e.target.closest && e.target.closest('button, a, [role="button"]');
             if (!target) return;
+            const text = `${target.textContent || ''} ${target.title || ''} ${target.getAttribute('aria-label') || ''}`.toLowerCase();
+            if (!/下载|download/.test(text)) return;
 
-            // 检查是否是下载按钮（根据文本或 class）
-            const text = (target.textContent || target.title || '').toLowerCase();
-            const isDownload = /下载|download|保存|save/.test(text);
-            if (!isDownload) return;
-
-            log('Download button clicked:', target);
-
-            // 尝试从按钮周围找到卡片 ID
             const cardId = findCardIdNearElement(target);
-            if (!cardId) return;
+            if (!cardId) return; // 找不到卡 ID 则放行原逻辑
 
             e.preventDefault();
-            e.stopPropagation();
-
-            const cfg = getConfig();
-            const resolved = await resolveUrlByCardId(cardId, cfg);
-            if (!resolved) {
-                log('No resolved URL for card:', cardId);
-                return;
-            }
-
-            log('Direct download:', cardId, '->', resolved.url, `(source: ${resolved.source})`);
-            triggerDownload(resolved.url, `${cardId}.png`);
+            e.stopImmediatePropagation();
+            log('Hijacked download click for card:', cardId);
+            doDirectDownload(cardId);
         }, true);
     }
 
     function findCardIdNearElement(el) {
-        // 向上查找 data-card-id 或 data-id
         let current = el;
-        for (let i = 0; i < 8 && current; i++) {
-            const id = current.dataset?.cardId || current.dataset?.id || current.dataset?.card_id || current.dataset?.plazaId;
-            if (id) return id;
-
-            // 从 href 中提取
-            const link = current.querySelector?.('a[href*="/card/"], a[href*="/download/"]') ||
-                         current.closest?.('a[href*="/card/"], a[href*="/download/"]');
-            if (link) {
-                const url = link.getAttribute('href');
-                const idFromUrl = getPlazaCardIdFromUrl(url);
-                if (idFromUrl) return idFromUrl;
+        for (let i = 0; i < 12 && current && current !== document.documentElement; i++) {
+            const img = current.querySelector &&
+                current.querySelector('img[data-rphub-card-id], img[data-card-id], img[src*="/api/cards/"]');
+            if (img) {
+                const fromDataset = img.dataset.rphubCardId || img.dataset.cardId;
+                if (fromDataset) return fromDataset;
+                const m = (img.getAttribute('src') || '').match(/\/api\/cards\/([^/?#\s]+)/);
+                if (m) return decodeURIComponent(m[1]);
             }
-
             current = current.parentElement;
         }
         return null;
     }
 
-    function getPlazaCardIdFromUrl(url) {
-        if (!url) return null;
-        try {
-            const u = new URL(url, location.href);
-            const patterns = [
-                /\/api\/download\/([^/?#]+)/,
-                /\/api\/card\/([^/?#]+)/,
-                /\/api\/cards\/([^/?#]+)/,
-                /\/card\/([^/?#]+)/,
-                /\/cards\/([^/?#]+)/,
-                /\/download\/([^/?#]+)/,
-                /\/file\/([^/?#]+)/,
-                /\/plaza\/card\/([^/?#]+)/,
-                /[?&]card_id=([^&#]+)/,
-                /[?&]id=([^&#]+)/,
-            ];
-            for (const p of patterns) {
-                const m = (u.pathname + u.search).match(p);
-                if (m) return decodeURIComponent(m[1]);
-            }
-        } catch (e) {
-            // ignore
-        }
-        return null;
-    }
-
-    async function resolveUrl(url, cfg) {
-        const cardId = getPlazaCardIdFromUrl(url);
-        if (!cardId) return null;
-        return resolveUrlByCardId(cardId, cfg);
-    }
-
+    // ---------- LAN manifest 缓存（含 in-flight 去重与失败短缓存） ----------
     let lanManifestCache = null;
     let lanManifestCacheTime = 0;
+    let lanManifestOk = false;
+    let lanManifestPromise = null;
 
     async function getLanManifest(cfg) {
         if (!cfg.enableLan || !cfg.lanBaseUrl) return null;
         const now = Date.now();
-        if (lanManifestCache && now - lanManifestCacheTime < 60000) {
+        const ttl = lanManifestOk ? 60000 : 20000; // 失败结果缓存更短，LAN 恢复后快速生效
+        if (lanManifestCacheTime && now - lanManifestCacheTime < ttl) {
             return lanManifestCache;
         }
-        try {
-            const res = await fetch(`${cfg.lanBaseUrl}/manifest.json`, { cache: 'no-cache' });
-            if (!res.ok) return null;
-            lanManifestCache = await res.json();
-            lanManifestCacheTime = now;
+        if (lanManifestPromise) return lanManifestPromise;
+        lanManifestPromise = (async () => {
+            try {
+                const url = `${cfg.lanBaseUrl.replace(/\/+$/, '')}/api/manifest`;
+                const res = await lanRequest(url, { timeout: 5000 });
+                if (!res || res.status !== 200) throw new Error('HTTP ' + (res && res.status));
+                lanManifestCache = JSON.parse(res.responseText);
+                lanManifestOk = true;
+                log('LAN manifest loaded, cards:', Object.keys(lanManifestCache).length);
+            } catch (e) {
+                log('LAN manifest fetch failed:', e.message || e);
+                lanManifestCache = null;
+                lanManifestOk = false;
+            }
+            lanManifestCacheTime = Date.now();
+            lanManifestPromise = null;
             return lanManifestCache;
-        } catch (e) {
-            log('LAN manifest fetch failed:', e.message);
-            return null;
-        }
+        })();
+        return lanManifestPromise;
     }
 
-    async function resolveUrlByCardId(cardId, cfg) {
-        // 1. 优先 LAN
+    // GM_xmlhttpRequest 由扩展上下文发请求，可绕过 HTTPS 页面 -> HTTP 局域网的
+    // 混合内容限制与 CORS；不可用时降级 fetch（可能被浏览器拦截，仅作兜底）
+    function lanRequest(url, { responseType = '', timeout = 8000 } = {}) {
+        return new Promise((resolve, reject) => {
+            if (typeof GM_xmlhttpRequest === 'function') {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url,
+                    responseType: responseType || undefined,
+                    timeout,
+                    onload: resolve,
+                    onerror: () => reject(new Error('LAN request failed')),
+                    ontimeout: () => reject(new Error('LAN request timeout')),
+                });
+            } else {
+                fetch(url, { cache: 'no-cache', signal: AbortSignal.timeout(timeout) })
+                    .then(async (res) => {
+                        if (responseType === 'blob') {
+                            resolve({ status: res.status, response: await res.blob() });
+                        } else {
+                            resolve({ status: res.status, responseText: await res.text() });
+                        }
+                    })
+                    .catch(reject);
+            }
+        });
+    }
+
+    // ---------- URL 解析 ----------
+    async function resolveImage(cls, rawUrl, cfg) {
+        // 1. 局域网优先：manifest 命中则取本地原图 blob
         if (cfg.enableLan && cfg.lanBaseUrl) {
-            const manifest = await getLanManifest(cfg);
-            if (manifest && manifest[cardId] && manifest[cardId].filename) {
-                return {
-                    url: `${cfg.lanBaseUrl}/api/image/${encodeURIComponent(manifest[cardId].filename)}`,
-                    source: 'lan',
-                    cardId,
-                };
+            try {
+                const manifest = await getLanManifest(cfg);
+                const entry = manifest && manifest[cls.cardId];
+                if (entry && entry.filename && entry.is_image !== false) {
+                    const lanUrl = `${cfg.lanBaseUrl.replace(/\/+$/, '')}/api/image/${encodeURIComponent(entry.filename)}`;
+                    const res = await lanRequest(lanUrl, { responseType: 'blob', timeout: 15000 });
+                    const blob = res && res.status === 200 ? res.response : null;
+                    if (blob && blob.size > 0) {
+                        log('LAN image hit:', cls.cardId, '->', entry.filename);
+                        return { url: URL.createObjectURL(blob), source: 'lan' };
+                    }
+                }
+            } catch (e) {
+                log('LAN image fetch failed:', cls.cardId, e.message || e);
             }
         }
+        // 2. 回退：保持源站原始 URL 不改写（缩略图 CDN 链接本身可用）
+        return { url: absolutize(rawUrl), source: 'source' };
+    }
 
-        // 2. 源站直链（绕过 UI 鉴权）
-        // 这里需要根据源站实际下载地址构造，常见模式：
+    async function resolveDownload(cardId, cfg) {
+        // 1. 局域网优先
+        if (cfg.enableLan && cfg.lanBaseUrl) {
+            try {
+                const manifest = await getLanManifest(cfg);
+                const entry = manifest && manifest[cardId];
+                if (entry && entry.filename && entry.is_image !== false) {
+                    const lanUrl = `${cfg.lanBaseUrl.replace(/\/+$/, '')}/api/image/${encodeURIComponent(entry.filename)}`;
+                    const res = await lanRequest(lanUrl, { responseType: 'blob', timeout: 30000 });
+                    const blob = res && res.status === 200 ? res.response : null;
+                    if (blob && blob.size > 0) {
+                        return {
+                            url: URL.createObjectURL(blob),
+                            source: 'lan',
+                            filename: entry.filename,
+                        };
+                    }
+                }
+            } catch (e) {
+                log('LAN download fetch failed:', cardId, e.message || e);
+            }
+        }
+        // 2. 源站直链（已验证无需鉴权：GET /api/cards/<id>/download/file）
+        const template = cfg.sourceDownloadTemplate;
         return {
-            url: `${cfg.sourceBaseUrl}/api/download/${encodeURIComponent(cardId)}`,
+            url: template.replace('{id}', encodeURIComponent(cardId)),
             source: 'source',
-            cardId,
+            filename: cardId + '.png',
         };
     }
 
-    function triggerDownload(url, filename) {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => a.remove(), 100);
+    // ---------- 下载执行与提示 ----------
+    async function doDirectDownload(cardId) {
+        showPlazaToast('正在准备下载...');
+        try {
+            const resolved = await resolveDownload(cardId, getConfig());
+            const a = document.createElement('a');
+            a.href = resolved.url;
+            a.download = resolved.filename || (cardId + '.png');
+            a.rel = 'noopener';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            if (resolved.url.startsWith('blob:')) {
+                setTimeout(() => URL.revokeObjectURL(resolved.url), 30000);
+            }
+            showPlazaToast(resolved.source === 'lan' ? '✅ 已从局域网下载' : '✅ 已从源站直链下载');
+        } catch (e) {
+            console.error('[RP-Hub Sync] Download failed:', e);
+            showPlazaToast('❌ 下载失败: ' + (e.message || e), true);
+        }
     }
 
-    // 注入样式
-    const style = document.createElement('style');
-    style.textContent = `
-        [data-rphub-source="lan"] { outline: 2px solid #22c55e !important; outline-offset: -2px; }
-        [data-rphub-source="source"] { outline: 2px solid #f59e0b !important; outline-offset: -2px; }
-    `;
-    document.head.appendChild(style);
+    let plazaToastTimer = null;
+    function showPlazaToast(msg, isError = false) {
+        let el = document.getElementById('rphub-plaza-toast');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'rphub-plaza-toast';
+            el.style.cssText = `
+                position: fixed;
+                top: 16px;
+                left: 50%;
+                transform: translateX(-50%);
+                z-index: 999999;
+                padding: 10px 18px;
+                border-radius: 999px;
+                font-size: 13px;
+                font-weight: 600;
+                color: #fff;
+                background: #111827;
+                box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+                transition: opacity .3s;
+                pointer-events: none;
+                max-width: 90vw;
+            `;
+            document.body.appendChild(el);
+        }
+        el.textContent = msg;
+        el.style.background = isError ? '#dc2626' : '#111827';
+        el.style.opacity = '1';
+        clearTimeout(plazaToastTimer);
+        plazaToastTimer = setTimeout(() => { el.style.opacity = '0'; }, 2500);
+    }
 })();
