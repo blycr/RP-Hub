@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RP-Hub Sync & Plaza LAN Hijack
 // @namespace    rphub
-// @version      2.0.2
+// @version      2.0.3
 // @description  RP-Hub 跨设备 GitHub 同步（增量/分片/角色卡剥离）+ 广场 LAN 优先/源站兜底资源挟持 + 下载次数绕过（支持 Tampermonkey/Violentmonkey/Firefox Mobile）
 // @author       You
 // @match        https://*.github.io/RP-Hub/*
@@ -237,6 +237,9 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
                 <button id="rphub-btn-push" style="flex:1;padding:8px;border:none;border-radius:6px;background:#059669;color:#fff;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><polyline points="5 12 12 5 19 12"/></svg>推送</button>
                 <button id="rphub-btn-pull" style="flex:1;padding:8px;border:none;border-radius:6px;background:#d97706;color:#fff;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><polyline points="19 12 12 19 5 12"/></svg>拉取</button>
             </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">
+                <button id="rphub-btn-repair-plaza" style="flex:1;padding:8px;border:1px solid #d1d5db;border-radius:6px;background:#fff;cursor:pointer;">修复缺失 plazaId</button>
+            </div>
             <hr style="border:none;border-top:1px solid #e5e7eb;margin:12px 0;">
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 <button id="rphub-btn-export" style="flex:1;padding:8px;border:1px solid #d1d5db;border-radius:6px;background:#fff;cursor:pointer;">导出配置</button>
@@ -263,6 +266,7 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         document.getElementById('rphub-btn-test-lan').addEventListener('click', testLanConnection);
         document.getElementById('rphub-btn-push').addEventListener('click', pushStateToGitHub);
         document.getElementById('rphub-btn-pull').addEventListener('click', pullStateFromGitHub);
+        document.getElementById('rphub-btn-repair-plaza').addEventListener('click', repairMissingPlazaIds);
         document.getElementById('rphub-btn-export').addEventListener('click', toggleExportArea);
         document.getElementById('rphub-btn-import').addEventListener('click', toggleImportArea);
         document.getElementById('rphub-btn-copy-export').addEventListener('click', copyExportText);
@@ -663,6 +667,13 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
             showConfigStatus('正在覆盖本地 IndexedDB...');
             await restoreIndexedDB(data);
 
+            showConfigStatus('正在修复缺失 plazaId...');
+            try {
+                await repairMissingPlazaIds();
+            } catch (e) {
+                log('repairMissingPlazaIds failed:', e);
+            }
+
             showConfigStatus('正在检查缺失角色卡...');
             await autoFillMissingCards(data);
 
@@ -735,6 +746,120 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
         const compressed = await decrypt(encrypted, passphrase);
         const json = await gunzipText(compressed);
         return JSON.parse(json);
+    }
+
+    // ============================================================
+    // 旧角色卡 plazaId 修复：按名字从广场列表匹配
+    // ============================================================
+    async function fetchPlazaCardList(cfg, page = 1, limit = 100) {
+        const url = `${cfg.sourceBaseUrl.replace(/\/+$/, '')}/api/cards?page=${page}&limit=${limit}`;
+        return new Promise((resolve, reject) => {
+            if (typeof GM_xmlhttpRequest === 'function') {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url,
+                    timeout: 15000,
+                    onload: (res) => {
+                        if (res.status >= 200 && res.status < 300) {
+                            try {
+                                resolve(JSON.parse(res.responseText));
+                            } catch (e) {
+                                reject(e);
+                            }
+                        } else {
+                            reject(new Error('HTTP ' + res.status));
+                        }
+                    },
+                    onerror: () => reject(new Error('network')),
+                    ontimeout: () => reject(new Error('timeout')),
+                });
+            } else {
+                fetch(url, { signal: AbortSignal.timeout(15000) })
+                    .then(async (res) => {
+                        if (!res.ok) throw new Error('HTTP ' + res.status);
+                        resolve(await res.json());
+                    })
+                    .catch(reject);
+            }
+        });
+    }
+
+    async function repairMissingPlazaIds() {
+        const cfg = getConfig();
+        const characters = await readIndexedDBKey(KEY_CHARACTERS);
+        if (!Array.isArray(characters)) {
+            notify('IndexedDB 中没有角色数据', true);
+            return;
+        }
+
+        const missing = characters.filter(c => c && !c.plazaId);
+        if (missing.length === 0) {
+            notify('所有角色卡都已关联 plazaId');
+            return;
+        }
+
+        if (!confirm(`检测到 ${missing.length} 个角色卡缺失 plazaId。是否尝试按名字从广场列表自动匹配？\n注意：同名卡会按第一个匹配结果关联，错误关联需手动修正。`)) {
+            return;
+        }
+
+        let repaired = 0;
+        const failed = [];
+        const notFound = [];
+
+        // 遍历广场列表（最多 5 页，避免无限请求）
+        let page = 1;
+        const maxPages = 5;
+        let list = [];
+        try {
+            while (page <= maxPages) {
+                showConfigStatus(`正在获取广场卡片列表 (${page}/${maxPages})...`);
+                const cards = await fetchPlazaCardList(cfg, page, 100);
+                if (!Array.isArray(cards) || cards.length === 0) break;
+                list = list.concat(cards);
+                if (cards.length < 100) break;
+                page++;
+            }
+        } catch (e) {
+            notify('获取广场卡片列表失败: ' + e.message, true);
+            return;
+        }
+
+        if (list.length === 0) {
+            notify('广场列表为空，无法匹配', true);
+            return;
+        }
+
+        // 建立 name -> id 索引（取第一个匹配）
+        const nameIndex = new Map();
+        list.forEach(card => {
+            if (card && card.name && !nameIndex.has(card.name)) {
+                nameIndex.set(card.name, card.id);
+            }
+        });
+
+        for (const char of missing) {
+            if (!char || !char.name) continue;
+            const plazaId = nameIndex.get(char.name);
+            if (plazaId) {
+                char.plazaId = plazaId;
+                char.isLocal = false;
+                char.plazaImportedAt = char.plazaImportedAt || Date.now();
+                repaired++;
+                log('Repaired plazaId for', char.name, '->', plazaId);
+            } else {
+                notFound.push(char);
+            }
+        }
+
+        if (repaired > 0) {
+            await writeIndexedDBKey(KEY_CHARACTERS, characters);
+            notify(`✅ 已修复 ${repaired} 个角色卡的 plazaId`);
+        }
+
+        if (notFound.length > 0) {
+            const names = notFound.map(c => c.name).join('、');
+            notify(`⚠️ 以下角色卡在广场中未找到同名卡，请手动重新导入：${names}`, true);
+        }
     }
 
     // ============================================================
