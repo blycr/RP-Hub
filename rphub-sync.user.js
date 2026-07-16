@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RP-Hub Sync & Plaza LAN Hijack
 // @namespace    rphub
-// @version      1.2.0
+// @version      1.2.1
 // @description  RP-Hub 跨设备 GitHub 同步 + 广场 LAN 优先/源站兜底资源挟持 + 下载次数绕过（支持 Tampermonkey/Violentmonkey/Firefox Mobile）
 // @author       You
 // @match        https://*.github.io/RP-Hub/*
@@ -214,9 +214,18 @@
     // ============================================================
     // 第 1 部分：RP-Hub 状态同步
     // ============================================================
+    // 广场页面可能被 RP-Hub 以 iframe 嵌入；iframe 内不注入悬浮按钮，避免双层
+    function isTopFrame() {
+        try {
+            return window.self === window.top;
+        } catch (e) {
+            return true;
+        }
+    }
+
     function initRpHubSync() {
         registerSyncMenu();
-        injectSyncButton();
+        if (isTopFrame()) injectSyncButton();
     }
 
     function registerSyncMenu() {
@@ -229,28 +238,46 @@
         }
     }
 
-    function injectSyncButton() {
-        if (document.getElementById('rphub-floating-btn')) return;
+    // 半透明小圆钮：贴右边缘中下部，避开广场底部操作栏，移动端不挡内容
+    const FLOAT_BTN_STYLE = `
+        position: fixed;
+        right: 10px;
+        top: 62%;
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        border: none;
+        background: rgba(79, 70, 229, 0.85);
+        color: #fff;
+        font-size: 20px;
+        line-height: 44px;
+        text-align: center;
+        padding: 0;
+        box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+        cursor: pointer;
+        z-index: 99999;
+        opacity: 0.75;
+        transition: opacity .2s;
+    `;
 
+    function makeFloatButton(id, title) {
+        if (document.getElementById(id)) return null;
         const btn = document.createElement('button');
-        btn.id = 'rphub-floating-btn';
-        btn.textContent = '🔄 RP-Hub Sync';
-        btn.style.cssText = `
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            z-index: 99999;
-            padding: 10px 16px;
-            border-radius: 999px;
-            border: none;
-            background: #4f46e5;
-            color: #fff;
-            font-weight: 600;
-            box-shadow: 0 4px 14px rgba(0,0,0,0.15);
-            cursor: pointer;
-        `;
+        btn.id = id;
+        btn.textContent = '🔄';
+        btn.title = title;
+        btn.setAttribute('aria-label', title);
+        btn.style.cssText = FLOAT_BTN_STYLE;
+        btn.addEventListener('mouseenter', () => { btn.style.opacity = '1'; });
+        btn.addEventListener('mouseleave', () => { btn.style.opacity = '0.75'; });
+        btn.addEventListener('touchstart', () => { btn.style.opacity = '1'; }, { passive: true });
         btn.addEventListener('click', createConfigPanel);
         document.body.appendChild(btn);
+        return btn;
+    }
+
+    function injectSyncButton() {
+        makeFloatButton('rphub-floating-btn', 'RP-Hub 同步配置');
     }
 
     async function pushStateToGitHub() {
@@ -648,33 +675,13 @@
         hookImageSrc();
         observeDownloadButtons();
         onDomReady(() => {
-            injectFloatingPlazaButton();
+            if (isTopFrame()) injectFloatingPlazaButton();
             injectSourceStyle();
         });
     }
 
     function injectFloatingPlazaButton() {
-        if (document.getElementById('rphub-plaza-btn')) return;
-
-        const btn = document.createElement('button');
-        btn.id = 'rphub-plaza-btn';
-        btn.textContent = '🔄 RP-Hub 广场配置';
-        btn.style.cssText = `
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            z-index: 99999;
-            padding: 10px 16px;
-            border-radius: 999px;
-            border: none;
-            background: #4f46e5;
-            color: #fff;
-            font-weight: 600;
-            box-shadow: 0 4px 14px rgba(0,0,0,0.15);
-            cursor: pointer;
-        `;
-        btn.addEventListener('click', createConfigPanel);
-        document.body.appendChild(btn);
+        makeFloatButton('rphub-plaza-btn', 'RP-Hub 广场配置');
     }
 
     function injectSourceStyle() {
@@ -757,12 +764,6 @@
                             if (this._rphubReq !== reqId) return;
                             desc.set.call(this, resolved.url);
                             try { this.dataset.rphubSource = resolved.source; } catch (e) { /* ignore */ }
-                            if (resolved.url.startsWith('blob:')) {
-                                const u = resolved.url;
-                                // 解码渲染完成后即可回收 blob，避免长列表占用内存
-                                this.addEventListener('load', () => URL.revokeObjectURL(u), { once: true });
-                                this.addEventListener('error', () => URL.revokeObjectURL(u), { once: true });
-                            }
                         }).catch(() => {
                             if (this._rphubReq !== reqId) return;
                             desc.set.call(this, absolutize(str));
@@ -905,6 +906,20 @@
     }
 
     // ---------- URL 解析 ----------
+    // 图片 blob URL 不能随 img 加载完就回收（Vue 会复用/克隆 img 节点、
+    // 翻译类扩展会重新请求同一 URL），改用 LRU 上限控制内存：
+    // 只保留最近 24 个，超出才回收最旧的
+    const BLOB_LRU_LIMIT = 24;
+    const blobUrlLRU = [];
+
+    function registerBlobUrl(url) {
+        blobUrlLRU.push(url);
+        while (blobUrlLRU.length > BLOB_LRU_LIMIT) {
+            const evicted = blobUrlLRU.shift();
+            try { URL.revokeObjectURL(evicted); } catch (e) { /* ignore */ }
+        }
+    }
+
     async function resolveImage(cls, rawUrl, cfg) {
         // 1. 局域网优先：manifest 命中则取本地原图 blob
         if (cfg.enableLan && cfg.lanBaseUrl) {
@@ -917,7 +932,9 @@
                     const blob = res && res.status === 200 ? res.response : null;
                     if (blob && blob.size > 0) {
                         log('LAN image hit:', cls.cardId, '->', entry.filename);
-                        return { url: URL.createObjectURL(blob), source: 'lan' };
+                        const blobUrl = URL.createObjectURL(blob);
+                        registerBlobUrl(blobUrl);
+                        return { url: blobUrl, source: 'lan' };
                     }
                 }
             } catch (e) {
@@ -939,8 +956,10 @@
                     const res = await lanRequest(lanUrl, { responseType: 'blob', timeout: 30000 });
                     const blob = res && res.status === 200 ? res.response : null;
                     if (blob && blob.size > 0) {
+                        const blobUrl = URL.createObjectURL(blob);
+                        registerBlobUrl(blobUrl);
                         return {
-                            url: URL.createObjectURL(blob),
+                            url: blobUrl,
                             source: 'lan',
                             filename: entry.filename,
                         };
