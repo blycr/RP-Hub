@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RP-Hub Sync & Plaza LAN Hijack
 // @namespace    rphub
-// @version      1.4.0
+// @version      1.4.1
 // @description  RP-Hub 跨设备 GitHub 同步 + 广场 LAN 优先/源站兜底资源挟持 + 下载次数绕过（支持 Tampermonkey/Violentmonkey/Firefox Mobile）
 // @author       You
 // @match        https://*.github.io/RP-Hub/*
@@ -640,8 +640,12 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
                 showConfigStatus('❌ 未找到同步文件');
                 return;
             }
+            log('sync file meta:', { size: file.size, sha: file.sha, hasContent: !!file.content });
 
-            const content = base64ToString(file.content);
+            const content = await getGitHubFileContent(cfg, file);
+            if (!content) {
+                throw new Error('同步文件内容为空或已损坏');
+            }
             const payload = JSON.parse(content);
 
             showConfigStatus('正在解密...');
@@ -682,11 +686,37 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
                     Accept: 'application/vnd.github+json',
                 },
             });
+            if (!res.responseText) {
+                throw new Error('GitHub 响应为空（网络异常或被拦截），请重试');
+            }
             return JSON.parse(res.responseText);
         } catch (e) {
             if (e.status === 404) return null;
             throw e;
         }
+    }
+
+    // GitHub Contents API 对超过 1MB 的文件不内联 content（返回空字符串），
+    // 此时必须改用 Git Blob API 按 sha 取内容
+    async function getGitHubFileContent(cfg, file) {
+        if (file.content) {
+            return base64ToString(file.content);
+        }
+        if (!file.sha) return '';
+        showConfigStatus('快照较大，正在通过 Blob API 下载...');
+        const res = await githubRequest({
+            method: 'GET',
+            url: `https://api.github.com/repos/${cfg.githubOwner}/${cfg.githubRepo}/git/blobs/${file.sha}`,
+            headers: {
+                Authorization: `token ${cfg.githubToken}`,
+                Accept: 'application/vnd.github+json',
+            },
+        });
+        if (!res.responseText) {
+            throw new Error('GitHub Blob 响应为空（网络异常或被拦截），请重试');
+        }
+        const blob = JSON.parse(res.responseText);
+        return base64ToString(blob.content || '');
     }
 
     // ============================================================
