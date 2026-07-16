@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RP-Hub Sync & Plaza LAN Hijack
 // @namespace    rphub
-// @version      1.2.1
+// @version      1.2.2
 // @description  RP-Hub 跨设备 GitHub 同步 + 广场 LAN 优先/源站兜底资源挟持 + 下载次数绕过（支持 Tampermonkey/Violentmonkey/Firefox Mobile）
 // @author       You
 // @match        https://*.github.io/RP-Hub/*
@@ -160,8 +160,8 @@
                 <button id="rphub-btn-test-lan" style="flex:1;padding:8px;border:1px solid #d1d5db;border-radius:6px;background:#fff;cursor:pointer;">测试 LAN</button>
             </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <button id="rphub-btn-push" style="flex:1;padding:8px;border:none;border-radius:6px;background:#059669;color:#fff;cursor:pointer;">📤 推送</button>
-                <button id="rphub-btn-pull" style="flex:1;padding:8px;border:none;border-radius:6px;background:#d97706;color:#fff;cursor:pointer;">📥 拉取</button>
+                <button id="rphub-btn-push" style="flex:1;padding:8px;border:none;border-radius:6px;background:#059669;color:#fff;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><polyline points="5 12 12 5 19 12"/></svg>推送</button>
+                <button id="rphub-btn-pull" style="flex:1;padding:8px;border:none;border-radius:6px;background:#d97706;color:#fff;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><polyline points="19 12 12 19 5 12"/></svg>拉取</button>
             </div>
             <div id="rphub-config-status" style="margin-top:10px;font-size:12px;color:#6b7280;min-height:18px;"></div>
         `;
@@ -249,10 +249,10 @@
         border: none;
         background: rgba(79, 70, 229, 0.85);
         color: #fff;
-        font-size: 20px;
-        line-height: 44px;
-        text-align: center;
         padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         box-shadow: 0 4px 14px rgba(0,0,0,0.25);
         cursor: pointer;
         z-index: 99999;
@@ -260,11 +260,13 @@
         transition: opacity .2s;
     `;
 
+    const SYNC_SVG = `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>`;
+
     function makeFloatButton(id, title) {
         if (document.getElementById(id)) return null;
         const btn = document.createElement('button');
         btn.id = id;
-        btn.textContent = '🔄';
+        btn.innerHTML = SYNC_SVG;
         btn.title = title;
         btn.setAttribute('aria-label', title);
         btn.style.cssText = FLOAT_BTN_STYLE;
