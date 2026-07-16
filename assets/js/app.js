@@ -4306,13 +4306,49 @@ ${content}
         const fetchModels = async (isManual = false) => {
             try {
                 if (isManual) showToast('正在获取模型列表...', 'info');
-                const url = settings.apiUrl.endsWith('/v1') ? `${settings.apiUrl}/models` : `${settings.apiUrl}/v1/models`;
-                const response = await fetch(url, {
-                    headers: { 'Authorization': `Bearer ${settings.apiKey}` }
-                });
-                if (!response.ok) throw new Error('Failed to fetch models');
-                const data = await response.json();
-                availableModels.value = data.data || [];
+
+                // 获取所有已配置的供应商（默认 + 自定义）
+                const providers = [...apiProviderOptions, ...customApiProviderOptions];
+                const allModels = [];
+
+                for (const provider of providers) {
+                    const providerId = provider.id;
+                    let apiUrl = provider.apiUrl;
+                    let apiKey = settings.apiProviderKeys?.[providerId] || '';
+
+                    // 自定义供应商从 settings 中读取 URL 和 Key
+                    if (isCustomApiProviderId(providerId)) {
+                        apiUrl = settings[getCustomApiUrlKey(providerId)] || '';
+                        apiKey = settings.apiProviderKeys?.[providerId] || settings.apiKey || '';
+                    }
+
+                    // 当前全局供应商
+                    if (providerId === settings.apiProviderId) {
+                        apiUrl = settings.apiUrl || apiUrl;
+                        apiKey = settings.apiKey || apiKey;
+                    }
+
+                    if (!apiUrl || !apiKey) continue;
+
+                    try {
+                        const url = apiUrl.endsWith('/v1') ? `${apiUrl}/models` : `${apiUrl}/v1/models`;
+                        const response = await fetch(url, {
+                            headers: { 'Authorization': `Bearer ${apiKey}` }
+                        });
+                        if (!response.ok) continue;
+                        const data = await response.json();
+                        const models = (data.data || []).map(m => ({
+                            ...m,
+                            providerId,
+                            providerName: provider.name,
+                        }));
+                        allModels.push(...models);
+                    } catch (e) {
+                        console.warn(`Failed to fetch models from ${provider.name}:`, e);
+                    }
+                }
+
+                availableModels.value = allModels;
                 if (isManual) showToast(`成功获取 ${availableModels.value.length} 个模型`, 'success');
             } catch (error) {
                 console.error(error);
@@ -4332,18 +4368,25 @@ ${content}
         };
 
         const selectModel = (modelId) => {
+            // 查找模型对应的供应商
+            const model = availableModels.value.find(m => m.id === modelId);
+            const providerId = model?.providerId || settings.apiProviderId;
+
             if (modelSelectionTarget.value === 'memoryEmbeddingModel') {
                 memorySettings.embeddingModel = modelId;
+                memorySettings.embeddingProviderId = providerId;
                 showModelSelector.value = false;
                 return;
             }
             if (modelSelectionTarget.value === 'memoryClassicModel') {
                 memorySettings.classicModel = modelId;
+                memorySettings.classicProviderId = providerId;
                 showModelSelector.value = false;
                 return;
             }
 
             settings[modelSelectionTarget.value] = modelId;
+            settings[`${modelSelectionTarget.value}ProviderId`] = providerId;
 
             if (
                 (modelSelectionTarget.value === 'qualityModel' && currentModelMode.value === 'quality') ||
@@ -4351,6 +4394,7 @@ ${content}
                 (modelSelectionTarget.value === 'fastModel' && currentModelMode.value === 'fast')
             ) {
                 settings.model = modelId;
+                settings.modelProviderId = providerId;
             }
 
             showModelSelector.value = false;
@@ -5238,6 +5282,26 @@ ${content}
 
         // Refactored generation logic
         let _wasCancelled = false;
+        const getApiConfigForModel = (modelId, fallbackProviderId = null) => {
+            const providerId = fallbackProviderId || settings[`${modelId}ProviderId`] || settings.modelProviderId || settings.apiProviderId;
+            const provider = getApiProviderById(providerId);
+
+            let apiUrl = settings.apiUrl;
+            let apiKey = settings.apiKey;
+
+            if (providerId && providerId !== settings.apiProviderId) {
+                if (isCustomApiProviderId(providerId)) {
+                    apiUrl = settings[getCustomApiUrlKey(providerId)] || apiUrl;
+                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
+                } else if (provider) {
+                    apiUrl = provider.apiUrl;
+                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
+                }
+            }
+
+            return { apiUrl: (apiUrl || '').replace(/\s+/g, ''), apiKey: (apiKey || '').trim() };
+        };
+
         const generateResponse = async (startTime = null, options = {}) => {
             const reuseGeneratingState = options.reuseGeneratingState === true;
             if (isGenerating.value && !reuseGeneratingState) return;
@@ -6094,12 +6158,13 @@ ${content}
             };
 
             try {
-                        const url = settings.apiUrl.endsWith('/v1') ? `${settings.apiUrl}/chat/completions` : `${settings.apiUrl}/v1/chat/completions`;
+                        const { apiUrl: requestApiUrl, apiKey: requestApiKey } = getApiConfigForModel('model');
+                        const url = requestApiUrl.endsWith('/v1') ? `${requestApiUrl}/chat/completions` : `${requestApiUrl}/v1/chat/completions`;
                         const response = await fetch(url, {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${settings.apiKey}`
+                                'Authorization': `Bearer ${requestApiKey}`
                             },
                             body: JSON.stringify({
                                 model: requestModel,
@@ -6650,9 +6715,23 @@ ${content}
 
         const requestClassicMemorySummary = async (job, signal) => {
             const model = String(memorySettings.classicModel || '').trim();
-            // 支持独立的 classic 供应商配置，未配置时回退到全局配置
-            const apiUrl = (settings.classicApiUrl || settings.apiUrl || '').replace(/\s+/g, '');
-            const apiKey = (settings.classicApiKey || settings.apiKey || '').trim();
+            // 根据 classicProviderId 使用对应供应商，未配置时回退到全局配置
+            const providerId = memorySettings.classicProviderId || settings.apiProviderId;
+            const provider = getApiProviderById(providerId);
+            let apiUrl = (settings.classicApiUrl || settings.apiUrl || '').replace(/\s+/g, '');
+            let apiKey = (settings.classicApiKey || settings.apiKey || '').trim();
+
+            // 如果指定了供应商且不是当前供应商，使用该供应商的配置
+            if (providerId && providerId !== settings.apiProviderId) {
+                if (isCustomApiProviderId(providerId)) {
+                    apiUrl = (settings[getCustomApiUrlKey(providerId)] || apiUrl).replace(/\s+/g, '');
+                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
+                } else if (provider) {
+                    apiUrl = provider.apiUrl;
+                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
+                }
+            }
+
             if (!apiUrl || !apiKey) throw new Error('请先配置 API 地址和 Key');
             if (!model) throw new Error('请先选择总结模式副模型');
 
@@ -6924,9 +7003,23 @@ ${content}
 
         const requestMemoryEmbeddings = async (inputs, signal) => {
             const model = getMemoryEmbeddingModel();
-            // 支持独立的 embedding 供应商配置，未配置时回退到全局配置
-            const apiUrl = (settings.embeddingApiUrl || settings.apiUrl || '').replace(/\s+/g, '');
-            const apiKey = (settings.embeddingApiKey || settings.apiKey || '').trim();
+            // 根据 embeddingProviderId 使用对应供应商，未配置时回退到全局配置
+            const providerId = memorySettings.embeddingProviderId || settings.apiProviderId;
+            const provider = getApiProviderById(providerId);
+            let apiUrl = (settings.embeddingApiUrl || settings.apiUrl || '').replace(/\s+/g, '');
+            let apiKey = (settings.embeddingApiKey || settings.apiKey || '').trim();
+
+            // 如果指定了供应商且不是当前供应商，使用该供应商的配置
+            if (providerId && providerId !== settings.apiProviderId) {
+                if (isCustomApiProviderId(providerId)) {
+                    apiUrl = (settings[getCustomApiUrlKey(providerId)] || apiUrl).replace(/\s+/g, '');
+                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
+                } else if (provider) {
+                    apiUrl = provider.apiUrl;
+                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
+                }
+            }
+
             if (!apiUrl || !apiKey) throw new Error('请先配置 API 地址和 Key');
             if (!model) throw new Error('请先选择向量嵌入模型');
 
