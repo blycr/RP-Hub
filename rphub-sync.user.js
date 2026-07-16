@@ -1362,40 +1362,94 @@ var qrcode=function(){var t=function(t,r){var e=t,n=g[r],o=null,i=0,a=null,u=[],
     // ============================================================
     // GitHub API 请求封装
     // ============================================================
-    function githubRequest(options) {
+    function githubRequest(options, retryCount = 1) {
         return new Promise((resolve, reject) => {
-            if (typeof GM_xmlhttpRequest === 'function') {
-                GM_xmlhttpRequest({
-                    ...options,
-                    onload: (res) => {
-                        if (res.status >= 200 && res.status < 300) {
-                            resolve(res);
-                        } else {
-                            const err = new Error(`GitHub API ${res.status}: ${res.responseText}`);
-                            err.status = res.status;
-                            reject(err);
-                        }
-                    },
-                    onerror: (err) => reject(err),
-                });
-            } else {
-                fetch(options.url, {
-                    method: options.method,
-                    headers: options.headers,
-                    body: options.data,
-                })
-                    .then(async (res) => {
-                        const text = await res.text();
-                        if (res.ok) {
-                            resolve({ responseText: text });
-                        } else {
-                            const err = new Error(`GitHub API ${res.status}: ${text}`);
-                            err.status = res.status;
-                            reject(err);
-                        }
+            const doFetchFallback = () => fetch(options.url, {
+                method: options.method,
+                headers: options.headers,
+                body: options.data,
+            }).then(async (res) => {
+                const text = await res.text();
+                if (res.ok) return { responseText: text };
+                throw new Error(`GitHub API ${res.status}: ${text}`);
+            });
+
+            const attempt = (left) => {
+                if (typeof GM_xmlhttpRequest === 'function') {
+                    GM_xmlhttpRequest({
+                        ...options,
+                        onload: (res) => {
+                            if (res.status >= 200 && res.status < 300) {
+                                resolve(res);
+                            } else if (res.status === 0 || !res.status) {
+                                // GM_xmlhttpRequest status=0 通常是 Tampermonkey/扩展拦截，尝试 fetch 兜底
+                                if (left > 0) {
+                                    log('GitHub request status=0, fallback to fetch...', left);
+                                    doFetchFallback().then(resolve).catch(() => {
+                                        setTimeout(() => attempt(left - 1), 1500);
+                                    });
+                                } else {
+                                    doFetchFallback().then(resolve).catch((err) => {
+                                        const msg = 'GitHub 请求被拦截或网络未连接（status=0）。请检查：1) Tampermonkey 是否被授予 api.github.com 访问权限；2) 是否有广告拦截器/浏览器扩展阻止了请求；3) 网络代理/VPN 是否正常。';
+                                        const wrapped = new Error(msg);
+                                        wrapped.status = 0;
+                                        wrapped.response = res;
+                                        wrapped.fetchError = err && err.message ? err.message : null;
+                                        reject(wrapped);
+                                    });
+                                }
+                            } else {
+                                const err = new Error(`GitHub API ${res.status}: ${res.responseText}`);
+                                err.status = res.status;
+                                reject(err);
+                            }
+                        },
+                        onerror: (err) => {
+                            if (left > 0) {
+                                log('GitHub request error, retrying...', left, err);
+                                setTimeout(() => attempt(left - 1), 1500);
+                            } else {
+                                const wrapped = new Error('GitHub 请求失败: ' + (err && err.message ? err.message : '网络异常或被拦截'));
+                                wrapped.original = err;
+                                reject(wrapped);
+                            }
+                        },
+                        ontimeout: () => {
+                            if (left > 0) {
+                                log('GitHub request timeout, retrying...', left);
+                                setTimeout(() => attempt(left - 1), 1500);
+                            } else {
+                                reject(new Error('GitHub 请求超时'));
+                            }
+                        },
+                    });
+                } else {
+                    fetch(options.url, {
+                        method: options.method,
+                        headers: options.headers,
+                        body: options.data,
                     })
-                    .catch(reject);
-            }
+                        .then(async (res) => {
+                            const text = await res.text();
+                            if (res.ok) {
+                                resolve({ responseText: text });
+                            } else {
+                                const err = new Error(`GitHub API ${res.status}: ${text}`);
+                                err.status = res.status;
+                                reject(err);
+                            }
+                        })
+                        .catch((err) => {
+                            if (left > 0) {
+                                log('GitHub fetch error, retrying...', left, err);
+                                setTimeout(() => attempt(left - 1), 1500);
+                            } else {
+                                reject(new Error('GitHub 请求失败: ' + (err && err.message ? err.message : '网络异常')));
+                            }
+                        });
+                }
+            };
+            attempt(retryCount);
         });
     }
 
