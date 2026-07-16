@@ -3311,6 +3311,13 @@
                                     </button>
                                 </div>
                                 <div class="bg-gray-50/60 p-3 rounded-xl border border-gray-100">
+                                    <label class="text-xs font-medium text-gray-500 block mb-2">向量供应商（可选，留空则使用全局配置）</label>
+                                    <input type="text" v-model="settings.embeddingApiUrl" placeholder="API 地址，如 https://api.siliconflow.cn/v1"
+                                        class="w-full px-3 py-2 text-sm bg-white/80 border border-gray-200 rounded-xl mb-2 focus:outline-none focus:ring-2 focus:ring-primary-400">
+                                    <input type="password" v-model="settings.embeddingApiKey" placeholder="API Key"
+                                        class="w-full px-3 py-2 text-sm bg-white/80 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-400">
+                                </div>
+                                <div class="bg-gray-50/60 p-3 rounded-xl border border-gray-100">
                                     <div class="flex justify-between items-center mb-2">
                                         <div class="relative flex items-center">
                                             <label class="text-xs font-medium text-gray-500">记忆召回分片数</label>

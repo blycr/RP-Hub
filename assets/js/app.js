@@ -552,6 +552,8 @@ createApp({
             apiProviderKeys: {},
             customApiUrl: '',
             customApiUrl2: '',
+            embeddingApiUrl: '',
+            embeddingApiKey: '',
             model: DEFAULT_API_CONFIG.qualityModel,
             contextSize: MAX_CONTEXT_SIZE,
             temperature: 1.0,
@@ -6915,17 +6917,22 @@ ${content}
 
         const requestMemoryEmbeddings = async (inputs, signal) => {
             const model = getMemoryEmbeddingModel();
-            if (!settings.apiUrl || !settings.apiKey) throw new Error('请先配置 API 地址和 Key');
+            // 支持独立的 embedding 供应商配置，未配置时回退到全局配置
+            const apiUrl = (settings.embeddingApiUrl || settings.apiUrl || '').trim();
+            const apiKey = (settings.embeddingApiKey || settings.apiKey || '').trim();
+            if (!apiUrl || !apiKey) throw new Error('请先配置 API 地址和 Key');
             if (!model) throw new Error('请先选择向量嵌入模型');
 
             const normalizedInputs = inputs.map(input => String(input || '').trim());
             if (normalizedInputs.some(input => !input)) throw new Error('嵌入内容不能为空');
 
-            const response = await fetch(getOpenAICompatUrl('embeddings'), {
+            const baseUrl = apiUrl.replace(/\/+$/, '');
+            const embeddingUrl = baseUrl.endsWith('/v1') ? `${baseUrl}/embeddings` : `${baseUrl}/v1/embeddings`;
+            const response = await fetch(embeddingUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${settings.apiKey}`
+                    'Authorization': `Bearer ${apiKey}`
                 },
                 body: JSON.stringify({
                     model,
