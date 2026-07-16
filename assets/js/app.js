@@ -6457,7 +6457,7 @@ ${content}
         const getMemoryEmbeddingModel = () => (memorySettings.embeddingModel || '').trim();
 
         const getOpenAICompatUrl = (endpoint) => {
-            const baseUrl = (settings.apiUrl || '').replace(/\/+$/, '');
+            const baseUrl = (settings.apiUrl || '').replace(/\s+/g, '').replace(/\/+$/, '');
             const apiUrl = baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`;
             return `${apiUrl}/${endpoint.replace(/^\/+/, '')}`;
         };
@@ -6918,7 +6918,7 @@ ${content}
         const requestMemoryEmbeddings = async (inputs, signal) => {
             const model = getMemoryEmbeddingModel();
             // 支持独立的 embedding 供应商配置，未配置时回退到全局配置
-            const apiUrl = (settings.embeddingApiUrl || settings.apiUrl || '').trim();
+            const apiUrl = (settings.embeddingApiUrl || settings.apiUrl || '').replace(/\s+/g, '');
             const apiKey = (settings.embeddingApiKey || settings.apiKey || '').trim();
             if (!apiUrl || !apiKey) throw new Error('请先配置 API 地址和 Key');
             if (!model) throw new Error('请先选择向量嵌入模型');
