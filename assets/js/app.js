@@ -114,6 +114,30 @@ createApp({
         UiTemplatePending
     },
     setup() {
+
+        // ============================================================
+
+        // RP-Hub-Sync 最小补丁：接收广场 iframe 发来的 plaza cardId
+
+        // ============================================================
+
+        window.__rphub_pending_plaza_card__ = null;
+
+        window.addEventListener('message', (event) => {
+
+            if (event.origin !== 'https://rphforum.zeabur.app') return;
+
+            if (event.data && event.data.type === 'RPHUB_PLAZA_CARD') {
+
+                window.__rphub_pending_plaza_card__ = event.data;
+
+                console.log('[RP-Hub Sync] pending plaza card:', event.data.cardId, event.data.name);
+
+            }
+
+        });
+
+        // ============================================================
         const cardUtils = window.RPHubCardUtils;
 
         // Default Avatar (Simple Gray Background)
@@ -4145,20 +4169,51 @@ ${content}
             : `${settings.apiUrl}/v1/${path}`;
 
         const fetchModels = async (isManual = false) => {
-            const apiKey = String(settings.apiKey || '').trim();
-            if (!apiKey) {
-                if (isManual) showToast('请先填写当前 API 预设的 Key', 'info');
-                return;
-            }
             try {
                 if (isManual) showToast('正在获取模型列表...', 'info');
-                const url = getApiEndpoint('models');
-                const response = await fetch(url, {
-                    headers: { 'Authorization': `Bearer ${apiKey}` }
-                });
-                if (!response.ok) throw new Error('Failed to fetch models');
-                const data = await response.json();
-                availableModels.value = data.data || [];
+
+                // 获取所有已配置的供应商（默认 + 自定义）
+                const providers = [...apiProviderOptions, ...customApiProviderOptions];
+                const allModels = [];
+
+                for (const provider of providers) {
+                    const providerId = provider.id;
+                    let apiUrl = provider.apiUrl;
+                    let apiKey = settings.apiProviderKeys?.[providerId] || '';
+
+                    // 自定义供应商从 settings 中读取 URL 和 Key
+                    if (isCustomApiProviderId(providerId)) {
+                        apiUrl = settings[getCustomApiUrlKey(providerId)] || '';
+                        apiKey = settings.apiProviderKeys?.[providerId] || settings.apiKey || '';
+                    }
+
+                    // 当前全局供应商
+                    if (providerId === settings.apiProviderId) {
+                        apiUrl = settings.apiUrl || apiUrl;
+                        apiKey = settings.apiKey || apiKey;
+                    }
+
+                    if (!apiUrl || !apiKey) continue;
+
+                    try {
+                        const url = apiUrl.endsWith('/v1') ? `${apiUrl}/models` : `${apiUrl}/v1/models`;
+                        const response = await fetch(url, {
+                            headers: { 'Authorization': `Bearer ${apiKey}` }
+                        });
+                        if (!response.ok) continue;
+                        const data = await response.json();
+                        const models = (data.data || []).map(m => ({
+                            ...m,
+                            providerId,
+                            providerName: provider.name,
+                        }));
+                        allModels.push(...models);
+                    } catch (e) {
+                        console.warn(`Failed to fetch models from ${provider.name}:`, e);
+                    }
+                }
+
+                availableModels.value = allModels;
                 if (isManual) showToast(`成功获取 ${availableModels.value.length} 个模型`, 'success');
             } catch (error) {
                 console.error(error);
@@ -5873,7 +5928,8 @@ ${content}
             };
 
             try {
-                        const url = getApiEndpoint('chat/completions');
+                        const { apiUrl: requestApiUrl, apiKey: requestApiKey } = getApiConfigForModel('model');
+                        const url = requestApiUrl.endsWith('/v1') ? `${requestApiUrl}/chat/completions` : `${requestApiUrl}/v1/chat/completions`;
                         const response = await fetch(url, {
                             method: 'POST',
                             headers: {
