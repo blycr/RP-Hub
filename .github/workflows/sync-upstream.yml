@@ -45,7 +45,8 @@ jobs:
       - name: Add upstream remote and fetch
         run: |
           git remote add upstream https://github.com/STA1N156/RP-Hub.git
-          git fetch upstream main --depth=1
+          # 全量 fetch：--depth=1 会让 merge 找不到共同祖先
+          git fetch upstream main
 
       - name: Check for upstream updates
         id: check
@@ -69,6 +70,7 @@ jobs:
           mkdir -p /tmp/rphub-backup
           cp favicon.svg /tmp/rphub-backup/ 2>/dev/null || true
           cp .gitignore /tmp/rphub-backup/ 2>/dev/null || true
+          cp CNAME /tmp/rphub-backup/ 2>/dev/null || true
 
           # 优先采用 upstream 改动，避免本地新增文件产生冲突
           git merge upstream/main -m "Sync upstream $(date -u +%Y-%m-%d)" -X theirs || true
@@ -76,6 +78,7 @@ jobs:
           # 恢复关键文件
           cp /tmp/rphub-backup/favicon.svg . 2>/dev/null || true
           cp /tmp/rphub-backup/.gitignore . 2>/dev/null || true
+          cp /tmp/rphub-backup/CNAME . 2>/dev/null || true
 
           # 检查 app.js 是否还包含补丁
           if grep -q "RPHUB_PLAZA_CARD" assets/js/app.js && grep -q "getApiConfigForModel" assets/js/app.js; then
@@ -91,13 +94,29 @@ jobs:
 
       - name: Re-apply patches if lost
         if: steps.check.outputs.updated == 'true' && steps.merge.outputs.patch_status == 'lost'
+        env:
+          SYNC_REPO_PAT: ${{ secrets.SYNC_REPO_PAT }}
         run: |
-          # 从 RP-Hub-Sync 仓库下载补丁脚本并运行
-          curl -sL https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-plazaId-patch.js -o /tmp/reapply-plazaId-patch.js
+          set -e
+          # RP-Hub-Sync 是私有仓库，raw 下载必须带 PAT（在仓库 Settings → Secrets 配置 SYNC_REPO_PAT）
+          AUTH=()
+          if [ -n "$SYNC_REPO_PAT" ]; then AUTH=(-H "Authorization: Bearer $SYNC_REPO_PAT"); fi
+
+          download() {
+            if ! curl -sfL "${AUTH[@]}" "$1" -o "$2"; then
+              echo "::error::下载补丁脚本失败：$1。RP-Hub-Sync 为私有仓库，请在本仓库 Settings → Secrets and variables → Actions 中配置 SYNC_REPO_PAT（需有 RP-Hub-Sync 的 repo 读权限）。"
+              exit 1
+            fi
+          }
+
+          download https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-plazaId-patch.js /tmp/reapply-plazaId-patch.js
           node /tmp/reapply-plazaId-patch.js assets/js/app.js
 
-          curl -sL https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-multi-provider-patch.js -o /tmp/reapply-multi-provider-patch.js
+          download https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-multi-provider-patch.js /tmp/reapply-multi-provider-patch.js
           node /tmp/reapply-multi-provider-patch.js .
+
+          # 补丁后语法验证，避免带病提交
+          node --check assets/js/app.js
 
           git add assets/js/app.js index.html
           git commit -m "chore: auto re-apply patches after upstream merge" || true
