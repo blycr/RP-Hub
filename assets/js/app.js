@@ -1002,7 +1002,9 @@ createApp({
 
         const toPlainContextMessage = (message, index, trackSources = false) => {
             const nextMessage = {
-                role: message.role,
+                role: ['user', 'assistant', 'system'].includes(message?.role)
+                    ? message.role
+                    : (message?.isSelf ? 'user' : 'assistant'),
                 name: message.name,
                 content: String(message.content || '')
             };
@@ -1324,10 +1326,11 @@ createApp({
             return Math.max(CLASSIC_MEMORY_MIN_CONCURRENCY, Math.min(CLASSIC_MEMORY_MAX_CONCURRENCY, Math.round(concurrency)));
         };
 
-        const normalizeMemorySettings = () => {
+        const normalizeMemorySettings = (savedSettings = {}) => {
             if (!memorySettings.classicModel && memorySettings.model) {
                 memorySettings.classicModel = String(memorySettings.model).trim();
             }
+            const legacyKeepFloors = savedSettings?.keepFloors;
             ['model', 'autoExtract', 'keepFloors', `re${'rankEnabled'}`, `re${'rankModel'}`].forEach(key => {
                 delete memorySettings[key];
             });
@@ -1338,13 +1341,13 @@ createApp({
                     : MEMORY_MODE_CLASSIC;
             memorySettings.classicModel = String(memorySettings.classicModel || '').trim();
             memorySettings.vectorKeepFloors = normalizeKeepFloors(
-                memorySettings.vectorKeepFloors,
+                savedSettings?.vectorKeepFloors ?? legacyKeepFloors ?? memorySettings.vectorKeepFloors,
                 VECTOR_KEEP_FLOORS_MIN,
                 VECTOR_KEEP_FLOORS_MAX,
                 VECTOR_KEEP_FLOORS_DEFAULT
             );
             memorySettings.summaryKeepFloors = normalizeKeepFloors(
-                memorySettings.summaryKeepFloors,
+                savedSettings?.summaryKeepFloors ?? legacyKeepFloors ?? memorySettings.summaryKeepFloors,
                 SUMMARY_KEEP_FLOORS_MIN,
                 SUMMARY_KEEP_FLOORS_MAX,
                 SUMMARY_KEEP_FLOORS_DEFAULT
@@ -2340,7 +2343,7 @@ createApp({
                 // Load Memory Settings
                 const savedMemorySettings = await getStoredValue('memory_settings');
                 if (savedMemorySettings) Object.assign(memorySettings, savedMemorySettings);
-                normalizeMemorySettings();
+                normalizeMemorySettings(savedMemorySettings);
 
                 const savedTokenUsageHistory = await getStoredValue('token_usage_history');
                 if (Array.isArray(savedTokenUsageHistory)) {
@@ -3550,12 +3553,24 @@ ${content}
             floors: getPostprocessedChatMessages(chatHistory.value, { includeSystem: false }).length
         }));
 
-        const conversationBodyLength = computed(() => (
-            chatHistory.value.reduce((total, message) => {
-                if (!['user', 'assistant'].includes(message?.role)) return total;
-                return total + parseCot(message.content || '').main.length;
-            }, 0)
-        ));
+        const getBodyContentLength = content => parseCot(String(content || '')).main.length;
+        const getMessagesBodyLength = messages => (Array.isArray(messages) ? messages : [])
+            .reduce((total, message) => total + getBodyContentLength(message?.content), 0);
+        const getSourceMessagesBodyLength = (sourceIndexes, fallbackMessage) => {
+            const sourceMessages = (Array.isArray(sourceIndexes) ? sourceIndexes : [])
+                .map(index => chatHistory.value[index])
+                .filter(Boolean);
+            return sourceMessages.length > 0
+                ? getMessagesBodyLength(sourceMessages)
+                : getMessagesBodyLength(fallbackMessage ? [fallbackMessage] : []);
+        };
+
+        const conversationBodyLength = computed(() => getPostprocessedChatMessages(
+            chatHistory.value,
+            { includeSystem: false }
+        ).reduce((total, message) => (
+            total + getSourceMessagesBodyLength(message._sourceIndexes, message)
+        ), 0));
 
         const buildClassicMemoryLookup = () => {
             const byAssistantId = new Map();
@@ -3593,15 +3608,11 @@ ${content}
                 const memory = findClassicMemoryForTurn(turnInfo, lookup);
                 if (!memory?.summary) return;
 
-                const sourceMessages = (turnInfo.assistant?._sourceIndexes || [])
-                    .map(index => chatHistory.value[index])
-                    .filter(message => message?.role === 'assistant');
-                const originalMessages = sourceMessages.length > 0 ? sourceMessages : [turnInfo.assistant];
-                const originalLength = originalMessages.reduce(
-                    (total, message) => total + parseCot(message.content || '').main.length,
-                    0
+                const originalLength = getSourceMessagesBodyLength(
+                    turnInfo.assistant?._sourceIndexes,
+                    turnInfo.assistant
                 );
-                predictedLength += parseCot(memory.summary).main.length - originalLength;
+                predictedLength += getBodyContentLength(memory.summary) - originalLength;
             });
             return Math.max(0, predictedLength);
         });
@@ -9279,6 +9290,7 @@ image###生成的提示词###
         const prepareLoadedChatHistoryForDisplay = (messages = []) => messages
             .filter(msg => msg !== null && msg !== undefined)
             .map(msg => {
+                if (!['user', 'assistant', 'system'].includes(msg.role)) msg.role = msg.isSelf ? 'user' : 'assistant';
                 if (msg.isSelf === undefined) {
                     msg.isSelf = msg.role === 'user';
                 }
@@ -10786,11 +10798,9 @@ ${memoryFragmentSection}
             showConfirmModal.value = true;
         };
 
-        const activeKeepFloors = computed(() => (
-            memorySettings.mode === MEMORY_MODE_CLASSIC
-                ? memorySettings.summaryKeepFloors
-                : memorySettings.vectorKeepFloors
-        ));
+        const activeKeepFloors = computed(() => memorySettings.mode === MEMORY_MODE_CLASSIC
+            ? normalizeKeepFloors(memorySettings.summaryKeepFloors, SUMMARY_KEEP_FLOORS_MIN, SUMMARY_KEEP_FLOORS_MAX, SUMMARY_KEEP_FLOORS_DEFAULT)
+            : normalizeKeepFloors(memorySettings.vectorKeepFloors, VECTOR_KEEP_FLOORS_MIN, VECTOR_KEEP_FLOORS_MAX, VECTOR_KEEP_FLOORS_DEFAULT));
         const keepFloorsSliderMin = computed(() => (
             memorySettings.mode === MEMORY_MODE_CLASSIC
                 ? SUMMARY_KEEP_FLOORS_MIN
