@@ -4500,13 +4500,21 @@ ${content}
             }
         };
 
-        // RP-Hub-Sync protocol-aware model selection v3
+        // RP-Hub-Sync protocol-aware model selection v4
         const manualModelProviderId = ref('');
         const manualModelId = ref('');
         const modelSelectorProviderOptions = computed(() => (
             modelSelectionTarget.value === 'memoryEmbeddingModel'
                 ? allApiProviderOptions.value.filter(provider => isProviderEmbeddingEnabled(provider.id))
                 : allApiProviderOptions.value
+        ));
+        const manualModelProviderSelectOptions = computed(() => (
+            modelSelectorProviderOptions.value.map(provider => ({
+                value: provider.id,
+                label: provider.name,
+                description: provider.apiUrl || '未配置地址',
+                key: provider.id,
+            }))
         ));
 
         const getSelectedModelState = () => {
@@ -11081,7 +11089,7 @@ ${memoryFragmentSection}
         return {
             switchProfile, createNewProfile, deleteProfile, userProfiles, activeProfileId, showProfileDropdown,
             processMainContent,
-            currentView, showDescriptionPanel, showModelSelector, modelSelectionTarget, openModelSelector, manualModelProviderId, manualModelId, modelSelectorProviderOptions, selectManualModel, showChatModelSelector, showCharacterEditor, showAddCharacterMenu, showPresetEditor, showUiTemplateEditor,
+            currentView, showDescriptionPanel, showModelSelector, modelSelectionTarget, openModelSelector, manualModelProviderId, manualModelId, modelSelectorProviderOptions, manualModelProviderSelectOptions, selectManualModel, showChatModelSelector, showCharacterEditor, showAddCharacterMenu, showPresetEditor, showUiTemplateEditor,
             showActiveToolEditor,
             showExportModal, sysInstruction, showInstructionPanel, exportItems, selectedExportIndices, // Export Modal
             showContextViewerModal, lastContextMessages, lastTriggeredWorldInfos, lastContextTotalLength, // Context Viewer

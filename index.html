@@ -1004,14 +1004,14 @@
                             <!-- Right controls: Model switcher -->
                             <div class="flex items-center">
                                 <div class="relative">
-                                    <!-- RP-Hub-Sync direct chat model selector -->
+                                    <!-- RP-Hub-Sync direct chat model selector v2 -->
                                     <button @click.stop="openModelSelector('model')"
-                                        class="min-w-0 max-w-[min(16rem,62vw)] px-3 py-1.5 rounded-lg text-left transition-colors flex items-center bg-white hover:bg-gray-50 border border-gray-200 shadow-sm active:scale-[0.98] text-primary-700"
+                                        class="min-w-0 max-w-[min(18rem,62vw)] min-h-10 px-3 py-1.5 rounded-xl text-left transition-colors flex items-center bg-white/90 hover:bg-white border border-gray-200 shadow-sm active:scale-[0.98] text-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
                                         :title="`${settings.model || '选择模型'} · ${getProviderDisplayName(settings.modelProviderId || settings.apiProviderId)}`">
                                         <svg class="w-4 h-4 mr-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M7 12h10M10 18h4"></path>
                                         </svg>
-                                        <span class="min-w-0 flex flex-col leading-tight">
+                                        <span class="min-w-0 flex flex-col gap-0.5 leading-tight">
                                             <span class="text-[11px] md:text-xs font-bold truncate">{{ settings.model || '选择模型' }}</span>
                                             <span class="text-[10px] text-gray-400 truncate">{{ getProviderDisplayName(settings.modelProviderId || settings.apiProviderId) }}</span>
                                         </span>
@@ -1729,7 +1729,7 @@
 
                             <!-- Main API Inputs -->
                             <div class="grid grid-cols-1 gap-5">
-                                <!-- RP-Hub-Sync dynamic API provider settings v3 -->
+                                <!-- RP-Hub-Sync dynamic API provider settings v4 -->
                                 <div class="group">
                                     <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 ml-1">API 提供商</label>
                                     <div class="relative mb-2 api-provider-selector-container">
@@ -1752,7 +1752,7 @@
                                             </svg>
                                         </button>
                                         <div v-if="showApiProviderSelector"
-                                            class="absolute left-0 right-0 top-full z-40 mt-2 w-full max-h-96 overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl p-2">
+                                            class="absolute left-0 right-0 top-full z-40 mt-2 w-full max-h-80 overflow-y-auto bg-white/95 border border-gray-200 rounded-xl shadow-2xl shadow-gray-900/15 p-1.5 backdrop-blur-xl custom-scrollbar">
                                             <button v-for="provider in apiProviderOptions" :key="provider.id" type="button"
                                                 @click="selectApiProvider(provider)"
                                                 :class="['w-full px-3 py-2.5 rounded-lg flex items-center text-left transition-all', selectedApiProvider.id === provider.id ? 'bg-teal-50 text-teal-700' : 'hover:bg-gray-50 text-gray-700']">
@@ -1788,7 +1788,7 @@
                                                 </svg>
                                             </button>
                                             <button type="button" @click="addCustomApiProvider"
-                                                class="w-full mt-2 pt-3 pb-2.5 px-3 border-t border-gray-100 rounded-lg flex items-center text-left text-teal-700 hover:bg-teal-50 transition-colors">
+                                                class="w-full mt-2 pt-3 pb-2.5 px-3 border-t border-gray-100 rounded-lg flex items-center text-left text-teal-700 hover:bg-teal-50 focus:outline-none focus:ring-2 focus:ring-teal-500/20 transition-colors">
                                                 <svg class="w-5 h-5 mr-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14M5 12h14"></path>
                                                 </svg>
@@ -1814,22 +1814,24 @@
                                             删除供应商
                                         </button>
                                     </div>
-                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
+                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
                                         <label class="min-w-0">
                                             <span class="block text-xs font-medium text-gray-500 mb-1">聊天调用方式</span>
-                                            <select :value="selectedProviderModes.chat"
-                                                @change="updateSelectedProviderMode('chat', $event.target.value)"
-                                                class="w-full h-10 bg-gray-50/60 border border-gray-200 rounded-lg px-3 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-400">
-                                                <option v-for="option in chatProtocolOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                                            </select>
+                                            <custom-select :model-value="selectedProviderModes.chat"
+                                                :options="chatProtocolOptions"
+                                                @update:model-value="updateSelectedProviderMode('chat', $event)"
+                                                button-class="h-10 rounded-lg px-3 py-1.5 text-sm text-gray-700 bg-gray-50/60 focus:border-teal-400 focus:ring-teal-100"
+                                                menu-class="text-sm">
+                                            </custom-select>
                                         </label>
                                         <label class="min-w-0">
                                             <span class="block text-xs font-medium text-gray-500 mb-1">向量能力</span>
-                                            <select :value="selectedProviderModes.embedding"
-                                                @change="updateSelectedProviderMode('embedding', $event.target.value)"
-                                                class="w-full h-10 bg-gray-50/60 border border-gray-200 rounded-lg px-3 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-400">
-                                                <option v-for="option in embeddingProtocolOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-                                            </select>
+                                            <custom-select :model-value="selectedProviderModes.embedding"
+                                                :options="embeddingProtocolOptions"
+                                                @update:model-value="updateSelectedProviderMode('embedding', $event)"
+                                                button-class="h-10 rounded-lg px-3 py-1.5 text-sm text-gray-700 bg-gray-50/60 focus:border-teal-400 focus:ring-teal-100"
+                                                menu-class="text-sm">
+                                            </custom-select>
                                         </label>
                                     </div>
                                 </div>
@@ -2966,13 +2968,17 @@
                                             <span class="settings-help-popover-content">用于把对话转换成可比较的向量坐标，它不是聊天模型。</span>
                                         </div>
                                     </div>
+                                    <!-- RP-Hub-Sync memory embedding model selector v4 -->
                                     <button @click="openModelSelector('memoryEmbeddingModel')"
-                                        class="w-full px-3 py-2 text-sm text-left bg-white/80 border border-gray-200 rounded-xl hover:border-primary-300 hover:bg-white transition-all cursor-pointer min-w-0"
+                                        class="w-full min-h-[3.25rem] px-3 py-2 text-sm text-left bg-white/80 border border-gray-200 rounded-xl hover:border-primary-300 hover:bg-white transition-all cursor-pointer min-w-0 flex items-center justify-between gap-3 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
                                         :title="memorySettings.embeddingModel ? memorySettings.embeddingModel + ' · ' + getProviderDisplayName(memorySettings.embeddingProviderId) : '请选择向量嵌入模型'">
                                         <span class="min-w-0 flex flex-col leading-tight">
                                             <span :class="memorySettings.embeddingModel ? 'text-gray-800 font-mono truncate' : 'text-gray-400'">{{ memorySettings.embeddingModel || '请选择向量嵌入模型' }}</span>
                                             <span v-if="memorySettings.embeddingProviderId" class="text-[11px] text-gray-400 truncate mt-1">{{ getProviderDisplayName(memorySettings.embeddingProviderId) }}</span>
                                         </span>
+                                        <svg class="w-4 h-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                        </svg>
                                     </button>
                                 </div>
                                 <div class="bg-gray-50/60 p-3 rounded-xl border border-gray-100">
@@ -3048,13 +3054,17 @@
                                         <span class="settings-help-popover-content">使用普通聊天模型在后台整理逐轮记忆。它会读取最近四轮对话作为背景，但只整理明确标记的最新一轮；生成的记忆内容用于替换非保留楼层中的 AI 原文，不会改动聊天界面。</span>
                                     </div>
                                 </div>
+                                <!-- RP-Hub-Sync memory summary model selector v4 -->
                                 <button @click="openModelSelector('memoryClassicModel')"
-                                    class="w-full px-3 py-2 text-sm text-left bg-white/80 border border-gray-200 rounded-xl hover:border-primary-300 hover:bg-white transition-all cursor-pointer min-w-0"
+                                    class="w-full min-h-[3.25rem] px-3 py-2 text-sm text-left bg-white/80 border border-gray-200 rounded-xl hover:border-primary-300 hover:bg-white transition-all cursor-pointer min-w-0 flex items-center justify-between gap-3 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
                                     :title="memorySettings.classicModel ? memorySettings.classicModel + ' · ' + getProviderDisplayName(memorySettings.classicProviderId) : '请选择总结模式副模型'">
                                     <span class="min-w-0 flex flex-col leading-tight">
                                         <span :class="memorySettings.classicModel ? 'text-gray-800 font-mono truncate' : 'text-gray-400'">{{ memorySettings.classicModel || '请选择总结模式副模型' }}</span>
                                         <span v-if="memorySettings.classicProviderId" class="text-[11px] text-gray-400 truncate mt-1">{{ getProviderDisplayName(memorySettings.classicProviderId) }}</span>
                                     </span>
+                                    <svg class="w-4 h-4 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                    </svg>
                                 </button>
                             </div>
 
@@ -3564,20 +3574,20 @@
                         </div>
                     </div>
                     <div class="p-4 border-b border-gray-100 flex flex-col gap-3">
-                        <!-- RP-Hub-Sync manual provider model selection v3 -->
+                        <!-- RP-Hub-Sync manual provider model selection v4 -->
                         <input v-model="modelSearchQuery" type="text" placeholder="检索模型或供应商..."
-                            class="w-full border rounded-lg px-4 py-2 bg-gray-50/60 border-gray-300 text-gray-800 focus:outline-none focus:ring-2 focus:ring-primary-500 transition-all shadow-sm">
+                            class="w-full h-10 border rounded-lg px-4 py-2 bg-gray-50/60 border-gray-300 text-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 transition-all shadow-sm">
                         <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_auto] gap-2">
-                            <select v-model="manualModelProviderId"
-                                class="min-w-0 h-10 border border-gray-300 rounded-lg px-3 bg-white text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500">
-                                <option value="" disabled>选择供应商</option>
-                                <option v-for="provider in modelSelectorProviderOptions" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
-                            </select>
+                            <custom-select v-model="manualModelProviderId"
+                                :options="manualModelProviderSelectOptions"
+                                button-class="h-10 rounded-lg px-3 py-1.5 text-sm text-gray-700 focus:border-primary-500 focus:ring-primary-500/20"
+                                menu-class="text-sm">
+                            </custom-select>
                             <input v-model="manualModelId" type="text" placeholder="手动输入模型 ID"
                                 @keydown.enter.prevent="selectManualModel"
-                                class="min-w-0 h-10 border border-gray-300 rounded-lg px-3 bg-white font-mono text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500">
+                                class="min-w-0 w-full h-10 border rounded-lg px-3 py-2 bg-gray-50/60 border-gray-300 font-mono text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 transition-all shadow-sm">
                             <button type="button" @click="selectManualModel"
-                                class="h-10 px-4 inline-flex items-center justify-center rounded-lg bg-primary-600 text-white text-sm font-bold hover:bg-primary-700 transition-colors">
+                                class="w-full sm:w-auto min-w-[4.5rem] h-10 px-4 inline-flex items-center justify-center rounded-lg bg-primary-600 text-white text-sm font-bold hover:bg-primary-700 active:scale-95 transition-all shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500/30">
                                 使用
                             </button>
                         </div>
