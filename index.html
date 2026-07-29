@@ -3644,14 +3644,17 @@
                             未找到模型或正在加载...
                         </div>
                         <div class="space-y-1">
-                            <button v-for="model in filteredModels" :key="model.id" @click="selectModel(model.id)"
-                                class="w-full text-left px-4 py-3 rounded-xl hover:bg-gray-50 hover:shadow-[0_2px_4px_rgba(0,0,0,0.02)] transition-colors flex justify-between items-center group border border-transparent hover:border-gray-100 active:bg-gray-100">
-                                <span
-                                    class="text-gray-700 font-mono font-medium group-hover:text-primary-600 transition-colors">{{
-                                    model.id }}</span>
-                                <span
-                                    v-if="(modelSelectionTarget === 'memoryEmbeddingModel' ? memorySettings.embeddingModel : (modelSelectionTarget === 'memoryClassicModel' ? memorySettings.classicModel : settings[modelSelectionTarget])) === model.id"
-                                    class="text-primary-600 bg-primary-50 p-1 rounded-full shadow-sm">
+                            <button v-for="model in filteredModels"
+                                :key="`${model.providerId || 'default'}:${model.id}`"
+                                @click="selectModel(model.id, model.providerId)"
+                                class="w-full text-left px-4 py-3 rounded-xl hover:bg-gray-50 hover:shadow-[0_2px_4px_rgba(0,0,0,0.02)] transition-colors flex justify-between items-center gap-3 group border border-transparent hover:border-gray-100 active:bg-gray-100">
+                                <span class="min-w-0 flex flex-col gap-0.5">
+                                    <span class="text-gray-700 font-mono font-medium break-all group-hover:text-primary-600 transition-colors">{{ model.id }}</span>
+                                    <span v-if="model.providerName || model.providerId"
+                                        class="text-xs text-gray-400 truncate">{{ model.providerName || model.providerId }}</span>
+                                </span>
+                                <span v-if="isModelSelected(model)"
+                                    class="shrink-0 text-primary-600 bg-primary-50 p-1 rounded-full shadow-sm">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                             d="M5 13l4 4L19 7"></path>

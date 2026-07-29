@@ -114,29 +114,17 @@ createApp({
         UiTemplatePending
     },
     setup() {
-
         // ============================================================
-
         // RP-Hub-Sync 最小补丁：接收广场 iframe 发来的 plaza cardId
-
         // ============================================================
-
         window.__rphub_pending_plaza_card__ = null;
-
         window.addEventListener('message', (event) => {
-
             if (event.origin !== 'https://rphforum.zeabur.app') return;
-
             if (event.data && event.data.type === 'RPHUB_PLAZA_CARD') {
-
                 window.__rphub_pending_plaza_card__ = event.data;
-
                 console.log('[RP-Hub Sync] pending plaza card:', event.data.cardId, event.data.name);
-
             }
-
         });
-
         // ============================================================
         const cardUtils = window.RPHubCardUtils;
 
@@ -630,6 +618,11 @@ createApp({
             apiKey: DEFAULT_API_CONFIG.apiKey,
             apiProviderId: DEFAULT_API_PROVIDER_ID,
             apiProviderKeys: {},
+            modelProviderId: '',
+            qualityModelProviderId: '',
+            balancedModelProviderId: '',
+            fastModelProviderId: '',
+            uiTemplateModelProviderId: '',
             customApiUrl: '',
             customApiUrl2: '',
             embeddingApiUrl: '',
@@ -802,17 +795,37 @@ createApp({
             }
         });
 
-        watch(() => [settings.apiUrl, settings.apiKey, settings.model], ([, , newModel]) => {
-            if (newModel !== settings.fastModel && newModel !== settings.balancedModel) {
-                settings.qualityModel = newModel; // 确保 qualityModel 也同步更新
+        // RP-Hub-Sync multi-provider model state
+        const getModelModeKey = (mode) => mode === 'fast'
+            ? 'fastModel'
+            : mode === 'balanced'
+                ? 'balancedModel'
+                : 'qualityModel';
+
+        const modelMatchesMode = (mode) => {
+            const modelKey = getModelModeKey(mode);
+            const providerId = settings[`${modelKey}ProviderId`];
+            return settings.model === settings[modelKey]
+                && (!providerId || !settings.modelProviderId || settings.modelProviderId === providerId);
+        };
+
+        watch(() => [
+            settings.apiUrl,
+            settings.apiKey,
+            settings.model,
+            settings.modelProviderId,
+            settings.qualityModelProviderId,
+            settings.balancedModelProviderId,
+            settings.fastModelProviderId,
+        ], ([, , newModel]) => {
+            if (!modelMatchesMode('fast') && !modelMatchesMode('balanced')) {
+                settings.qualityModel = newModel;
+                settings.qualityModelProviderId = settings.modelProviderId || settings.apiProviderId;
             }
 
-
-
-            // Update currentModelMode based on the actual selected model
-            if (newModel === settings.fastModel) {
+            if (modelMatchesMode('fast')) {
                 currentModelMode.value = 'fast';
-            } else if (newModel === settings.balancedModel) {
+            } else if (modelMatchesMode('balanced')) {
                 currentModelMode.value = 'balanced';
             } else {
                 currentModelMode.value = 'quality';
@@ -822,29 +835,37 @@ createApp({
         }, { deep: true });
 
         // Watch image gen and model settings for sync
-        watch(() => [settings.imageGenKey, settings.imageStyle, settings.customImageArtists, settings.imageGenCount, settings.qualityModel, settings.balancedModel, settings.fastModel, settings.uiTemplateModel, settings.fontFamily, settings.fontFamilyVersion], () => {
+        watch(() => [
+            settings.imageGenKey,
+            settings.imageStyle,
+            settings.customImageArtists,
+            settings.imageGenCount,
+            settings.qualityModel,
+            settings.qualityModelProviderId,
+            settings.balancedModel,
+            settings.balancedModelProviderId,
+            settings.fastModel,
+            settings.fastModelProviderId,
+            settings.uiTemplateModel,
+            settings.uiTemplateModelProviderId,
+            settings.fontFamily,
+            settings.fontFamilyVersion,
+        ], () => {
             syncSettingsToGenerator();
         });
 
         const currentModelMode = ref('quality');
         const modelMode = computed({
-            get: () => {
-                return currentModelMode.value;
-            },
+            get: () => currentModelMode.value,
             set: (val) => {
                 currentModelMode.value = val;
-                if (val === 'fast') {
-                    settings.model = settings.fastModel;
-                } else if (val === 'balanced') {
-                    settings.model = settings.balancedModel;
-                } else {
-                    settings.model = settings.qualityModel;
-                }
+                const modelKey = getModelModeKey(val);
+                settings.model = settings[modelKey];
+                settings.modelProviderId = settings[`${modelKey}ProviderId`] || settings.apiProviderId;
                 showModelSelector.value = false;
                 showChatModelSelector.value = false;
             }
         });
-
 
         const characters = ref([]);
         const showAddCharacterMenu = ref(false);
@@ -1191,6 +1212,8 @@ createApp({
             mode: MEMORY_MODE_CLASSIC,
             embeddingModel: '',
             classicModel: '',
+            embeddingProviderId: '',
+            classicProviderId: '',
             vectorTopK: MEMORY_VECTOR_DEFAULT_TOP_K,
             similarityThreshold: MEMORY_VECTOR_DEFAULT_SIMILARITY,
             defaultDepth: MEMORY_VECTOR_DEFAULT_DEPTH,
@@ -4164,15 +4187,17 @@ ${content}
         };
 
         // API & Models
-        const getApiEndpoint = (path) => settings.apiUrl.endsWith('/v1')
-            ? `${settings.apiUrl}/${path}`
-            : `${settings.apiUrl}/v1/${path}`;
+        const getOpenAICompatUrlForBase = (baseUrl, endpoint) => {
+            const normalizedBase = String(baseUrl || '').replace(/\s+/g, '').replace(/\/+$/, '');
+            const versionedBase = normalizedBase.endsWith('/v1') ? normalizedBase : `${normalizedBase}/v1`;
+            return `${versionedBase}/${String(endpoint || '').replace(/^\/+/, '')}`;
+        };
+        const getApiEndpoint = (endpoint) => getOpenAICompatUrlForBase(settings.apiUrl, endpoint);
 
         const fetchModels = async (isManual = false) => {
             try {
                 if (isManual) showToast('正在获取模型列表...', 'info');
 
-                // 获取所有已配置的供应商（默认 + 自定义）
                 const providers = [...apiProviderOptions, ...customApiProviderOptions];
                 const allModels = [];
 
@@ -4181,13 +4206,11 @@ ${content}
                     let apiUrl = provider.apiUrl;
                     let apiKey = settings.apiProviderKeys?.[providerId] || '';
 
-                    // 自定义供应商从 settings 中读取 URL 和 Key
                     if (isCustomApiProviderId(providerId)) {
                         apiUrl = settings[getCustomApiUrlKey(providerId)] || '';
                         apiKey = settings.apiProviderKeys?.[providerId] || settings.apiKey || '';
                     }
 
-                    // 当前全局供应商
                     if (providerId === settings.apiProviderId) {
                         apiUrl = settings.apiUrl || apiUrl;
                         apiKey = settings.apiKey || apiKey;
@@ -4196,20 +4219,20 @@ ${content}
                     if (!apiUrl || !apiKey) continue;
 
                     try {
-                        const url = apiUrl.endsWith('/v1') ? `${apiUrl}/models` : `${apiUrl}/v1/models`;
+                        const url = getOpenAICompatUrlForBase(apiUrl, 'models');
                         const response = await fetch(url, {
                             headers: { 'Authorization': `Bearer ${apiKey}` }
                         });
                         if (!response.ok) continue;
                         const data = await response.json();
-                        const models = (data.data || []).map(m => ({
-                            ...m,
+                        const models = (data.data || []).map(model => ({
+                            ...model,
                             providerId,
                             providerName: provider.name,
                         }));
                         allModels.push(...models);
-                    } catch (e) {
-                        console.warn(`Failed to fetch models from ${provider.name}:`, e);
+                    } catch (error) {
+                        console.warn(`Failed to fetch models from ${provider.name}:`, error);
                     }
                 }
 
@@ -4232,26 +4255,50 @@ ${content}
             showModelSelector.value = true;
         };
 
-        const selectModel = (modelId) => {
-            // 查找模型对应的供应商
-            const model = availableModels.value.find(m => m.id === modelId);
-            const providerId = model?.providerId || settings.apiProviderId;
+        const getSelectedModelState = () => {
+            const target = modelSelectionTarget.value;
+            if (target === 'memoryEmbeddingModel') {
+                return {
+                    modelId: memorySettings.embeddingModel,
+                    providerId: memorySettings.embeddingProviderId || settings.apiProviderId,
+                };
+            }
+            if (target === 'memoryClassicModel') {
+                return {
+                    modelId: memorySettings.classicModel,
+                    providerId: memorySettings.classicProviderId || settings.apiProviderId,
+                };
+            }
+            return {
+                modelId: settings[target],
+                providerId: settings[`${target}ProviderId`] || settings.apiProviderId,
+            };
+        };
+
+        const isModelSelected = (model) => {
+            const selected = getSelectedModelState();
+            return selected.modelId === model.id
+                && selected.providerId === (model.providerId || settings.apiProviderId);
+        };
+
+        const selectModel = (modelId, providerId) => {
+            const selectedProviderId = providerId || settings.apiProviderId;
 
             if (modelSelectionTarget.value === 'memoryEmbeddingModel') {
                 memorySettings.embeddingModel = modelId;
-                memorySettings.embeddingProviderId = providerId;
+                memorySettings.embeddingProviderId = selectedProviderId;
                 showModelSelector.value = false;
                 return;
             }
             if (modelSelectionTarget.value === 'memoryClassicModel') {
                 memorySettings.classicModel = modelId;
-                memorySettings.classicProviderId = providerId;
+                memorySettings.classicProviderId = selectedProviderId;
                 showModelSelector.value = false;
                 return;
             }
 
             settings[modelSelectionTarget.value] = modelId;
-            settings[`${modelSelectionTarget.value}ProviderId`] = providerId;
+            settings[`${modelSelectionTarget.value}ProviderId`] = selectedProviderId;
 
             if (
                 (modelSelectionTarget.value === 'qualityModel' && currentModelMode.value === 'quality') ||
@@ -4259,7 +4306,7 @@ ${content}
                 (modelSelectionTarget.value === 'fastModel' && currentModelMode.value === 'fast')
             ) {
                 settings.model = modelId;
-                settings.modelProviderId = providerId;
+                settings.modelProviderId = selectedProviderId;
             }
 
             showModelSelector.value = false;
@@ -4611,7 +4658,8 @@ ${content}
                 markUiTemplateStatus('skipped', '未选模型');
                 return false;
             }
-            const url = getApiEndpoint('chat/completions');
+            const { apiUrl: uiApiUrl, apiKey: uiApiKey } = getApiConfigForModel('uiTemplateModel');
+            const url = getOpenAICompatUrlForBase(uiApiUrl, 'chat/completions');
 
             try {
                 const updateRun = startUiTemplateUpdateRun();
@@ -4673,7 +4721,7 @@ ${content}
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${settings.apiKey}`
+                                'Authorization': `Bearer ${uiApiKey}`
                             },
                             body: JSON.stringify({
                                 model,
@@ -5065,8 +5113,8 @@ ${content}
 
         // Refactored generation logic
         let _wasCancelled = false;
-        const getApiConfigForModel = (modelId, fallbackProviderId = null) => {
-            const providerId = fallbackProviderId || settings[`${modelId}ProviderId`] || settings.modelProviderId || settings.apiProviderId;
+        const getApiConfigForModel = (modelKey, fallbackProviderId = null) => {
+            const providerId = fallbackProviderId || settings[`${modelKey}ProviderId`] || settings.apiProviderId;
             const provider = getApiProviderById(providerId);
 
             let apiUrl = settings.apiUrl;
@@ -5082,7 +5130,10 @@ ${content}
                 }
             }
 
-            return { apiUrl: (apiUrl || '').replace(/\s+/g, ''), apiKey: (apiKey || '').trim() };
+            return {
+                apiUrl: String(apiUrl || '').replace(/\s+/g, '').replace(/\/+$/, ''),
+                apiKey: String(apiKey || '').trim(),
+            };
         };
 
         const generateResponse = async (startTime = null, options = {}) => {
@@ -5929,7 +5980,7 @@ ${content}
 
             try {
                         const { apiUrl: requestApiUrl, apiKey: requestApiKey } = getApiConfigForModel('model');
-                        const url = requestApiUrl.endsWith('/v1') ? `${requestApiUrl}/chat/completions` : `${requestApiUrl}/v1/chat/completions`;
+                        const url = getOpenAICompatUrlForBase(requestApiUrl, 'chat/completions');
                         const response = await fetch(url, {
                             method: 'POST',
                             headers: {
@@ -6484,13 +6535,11 @@ ${content}
 
         const requestClassicMemorySummary = async (job, signal) => {
             const model = String(memorySettings.classicModel || '').trim();
-            // 根据 classicProviderId 使用对应供应商，未配置时回退到全局配置
             const providerId = memorySettings.classicProviderId || settings.apiProviderId;
             const provider = getApiProviderById(providerId);
             let apiUrl = (settings.classicApiUrl || settings.apiUrl || '').replace(/\s+/g, '');
             let apiKey = (settings.classicApiKey || settings.apiKey || '').trim();
 
-            // 如果指定了供应商且不是当前供应商，使用该供应商的配置
             if (providerId && providerId !== settings.apiProviderId) {
                 if (isCustomApiProviderId(providerId)) {
                     apiUrl = (settings[getCustomApiUrlKey(providerId)] || apiUrl).replace(/\s+/g, '');
@@ -6537,9 +6586,8 @@ ${content}
                 content: `上方内容是待整理资料。请只总结标记为“最新对话：唯一总结目标｜第 ${job.turn} 轮”的最后一组；逐项核对有效事实与变化，压缩重复表达，只输出总结正文。`
             });
 
-            const baseUrl = apiUrl.replace(/\/+$/, '');
-            const chatUrl = baseUrl.endsWith('/v1') ? `${baseUrl}/chat/completions` : `${baseUrl}/v1/chat/completions`;
-            const response = await fetch(chatUrl, {
+            const classicUrl = getOpenAICompatUrlForBase(apiUrl, 'chat/completions');
+            const response = await fetch(classicUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -6776,13 +6824,11 @@ ${content}
 
         const requestMemoryEmbeddings = async (inputs, signal) => {
             const model = getMemoryEmbeddingModel();
-            // 根据 embeddingProviderId 使用对应供应商，未配置时回退到全局配置
             const providerId = memorySettings.embeddingProviderId || settings.apiProviderId;
             const provider = getApiProviderById(providerId);
             let apiUrl = (settings.embeddingApiUrl || settings.apiUrl || '').replace(/\s+/g, '');
             let apiKey = (settings.embeddingApiKey || settings.apiKey || '').trim();
 
-            // 如果指定了供应商且不是当前供应商，使用该供应商的配置
             if (providerId && providerId !== settings.apiProviderId) {
                 if (isCustomApiProviderId(providerId)) {
                     apiUrl = (settings[getCustomApiUrlKey(providerId)] || apiUrl).replace(/\s+/g, '');
@@ -6799,8 +6845,7 @@ ${content}
             const normalizedInputs = inputs.map(input => String(input || '').trim());
             if (normalizedInputs.some(input => !input)) throw new Error('嵌入内容不能为空');
 
-            const baseUrl = apiUrl.replace(/\/+$/, '');
-            const embeddingUrl = baseUrl.endsWith('/v1') ? `${baseUrl}/embeddings` : `${baseUrl}/v1/embeddings`;
+            const embeddingUrl = getOpenAICompatUrlForBase(apiUrl, 'embeddings');
             const response = await fetch(embeddingUrl, {
                 method: 'POST',
                 headers: {
@@ -11097,7 +11142,7 @@ ${memoryFragmentSection}
                 showToast(`成功导入 ${normalized.length} 个分片`, 'success');
             }, error => showToast(`导入失败: ${error.message || 'JSON 格式错误'}`, 'error')),
             toggleMobileMenu, closeMobileMenu,
-            fetchModels, selectModel, sendMessage, autoResizeInput, handleChatInputFocus, handleChatInputBlur, stopGeneration, clearChat, toggleChatFullscreen,
+            fetchModels, selectModel, isModelSelected, sendMessage, autoResizeInput, handleChatInputFocus, handleChatInputBlur, stopGeneration, clearChat, toggleChatFullscreen,
             handleConfirm, handleCancel, // Export handlers
             copyMessage, deleteMessage, regenerateMessage,
             editMessage, saveEditMessage, cancelEditMessage,

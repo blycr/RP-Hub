@@ -1,26 +1,19 @@
 name: Sync upstream and deploy Pages
 
 on:
-  # 每天 UTC 00:00 检查一次上游更新
-  # 时区换算：北京时间每天 08:00
   schedule:
+    # Beijing time 08:00 every day.
     - cron: '0 0 * * *'
-
-  # 允许手动触发
   workflow_dispatch:
-
-  # 每次推送到 main 分支时触发（本地修改代码后推送）
   push:
     branches:
       - main
 
-# 权限：只需要读写本仓库内容
 permissions:
   contents: write
   pages: write
   id-token: write
 
-# 防止并发冲突：新的同步开始时，取消正在运行的旧同步
 concurrency:
   group: 'sync-upstream'
   cancel-in-progress: true
@@ -28,7 +21,6 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    # 防止 workflow 自己推送后再次触发（避免无限循环）
     if: github.actor != 'github-actions[bot]'
     steps:
       - name: Checkout repository
@@ -42,97 +34,75 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Add upstream remote and fetch
+      - name: Fetch and merge upstream
         run: |
+          set -e
           git remote add upstream https://github.com/STA1N156/RP-Hub.git
-          # 全量 fetch：--depth=1 会让 merge 找不到共同祖先
           git fetch upstream main
 
-      - name: Check for upstream updates
-        id: check
-        run: |
-          UPSTREAM=$(git rev-parse upstream/main)
-          ORIGIN=$(git rev-parse origin/main)
-          echo "upstream=$UPSTREAM"
-          echo "origin=$ORIGIN"
-          if [ "$UPSTREAM" = "$ORIGIN" ]; then
-            echo "No updates from upstream."
-            echo "updated=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Upstream has new commits."
-            echo "updated=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Merge upstream changes
-        if: steps.check.outputs.updated == 'true'
-        run: |
-          # 备份本地关键文件，防止 upstream 删除
           mkdir -p /tmp/rphub-backup
           cp favicon.svg /tmp/rphub-backup/ 2>/dev/null || true
           cp .gitignore /tmp/rphub-backup/ 2>/dev/null || true
           cp CNAME /tmp/rphub-backup/ 2>/dev/null || true
 
-          # 优先采用 upstream 改动，避免本地新增文件产生冲突
-          git merge upstream/main -m "Sync upstream $(date -u +%Y-%m-%d)" -X theirs || true
+          # A real conflict must stop the job. Never commit an unresolved merge.
+          git merge upstream/main -m "Sync upstream $(date -u +%Y-%m-%d)" -X theirs
 
-          # 恢复关键文件
           cp /tmp/rphub-backup/favicon.svg . 2>/dev/null || true
           cp /tmp/rphub-backup/.gitignore . 2>/dev/null || true
           cp /tmp/rphub-backup/CNAME . 2>/dev/null || true
 
-          # 检查 app.js 是否还包含补丁
-          if grep -q "RPHUB_PLAZA_CARD" assets/js/app.js && grep -q "getApiConfigForModel" assets/js/app.js; then
-            echo "patch_status=ok" >> "$GITHUB_OUTPUT"
-          else
-            echo "patch_status=lost" >> "$GITHUB_OUTPUT"
-            echo "::warning::Patches lost in assets/js/app.js after upstream merge. Attempting auto re-apply."
-          fi
-
-          git add -A
-          git commit --no-edit || true
-        id: merge
-
-      - name: Re-apply patches if lost
-        if: steps.check.outputs.updated == 'true' && steps.merge.outputs.patch_status == 'lost'
+      - name: Download and reconcile local patches
         env:
           SYNC_REPO_PAT: ${{ secrets.SYNC_REPO_PAT }}
         run: |
           set -e
-          # RP-Hub-Sync 是私有仓库，raw 下载必须带 PAT（在仓库 Settings → Secrets 配置 SYNC_REPO_PAT）
           AUTH=()
           if [ -n "$SYNC_REPO_PAT" ]; then AUTH=(-H "Authorization: Bearer $SYNC_REPO_PAT"); fi
 
           download() {
             if ! curl -sfL "${AUTH[@]}" "$1" -o "$2"; then
-              echo "::error::下载补丁脚本失败：$1。RP-Hub-Sync 为私有仓库，请在本仓库 Settings → Secrets and variables → Actions 中配置 SYNC_REPO_PAT（需有 RP-Hub-Sync 的 repo 读权限）。"
+              echo "::error::Failed to download $1. Configure SYNC_REPO_PAT with read access to the private RP-Hub-Sync repository."
               exit 1
             fi
           }
 
           download https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-plazaId-patch.js /tmp/reapply-plazaId-patch.js
-          node /tmp/reapply-plazaId-patch.js assets/js/app.js
-
           download https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-multi-provider-patch.js /tmp/reapply-multi-provider-patch.js
+
+          node /tmp/reapply-plazaId-patch.js assets/js/app.js
           node /tmp/reapply-multi-provider-patch.js .
 
-          # 补丁后语法验证，避免带病提交
           node --check assets/js/app.js
+          git -c core.whitespace=cr-at-eol diff --check
+          grep -q "RPHUB_PLAZA_CARD" assets/js/app.js
+          grep -q "const selectModel = (modelId, providerId)" assets/js/app.js
+          grep -q "getApiConfigForModel" assets/js/app.js
+          grep -q "selectModel(model.id, model.providerId)" index.html
 
-          git add assets/js/app.js index.html
-          git commit -m "chore: auto re-apply patches after upstream merge" || true
-
-      - name: Push to origin
-        if: steps.check.outputs.updated == 'true'
+      - name: Commit reconciled result
+        id: commit
         run: |
-          git push origin main
+          set -e
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: reconcile local patches"
+          fi
+
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push reconciled result
+        if: steps.commit.outputs.changed == 'true'
+        run: git push origin main
 
       - name: Summary
         run: |
-          if [ "${{ steps.check.outputs.updated }}" = "true" ]; then
-            echo "✅ Upstream synced and pushed. GitHub Pages will auto-deploy."
-            if [ "${{ steps.merge.outputs.patch_status }}" = "lost" ]; then
-              echo "ℹ️ plazaId patch was auto re-applied by scripts/reapply-plazaId-patch.js from RP-Hub-Sync."
-            fi
+          if [ "${{ steps.commit.outputs.changed }}" = "true" ]; then
+            echo "Upstream and local patches were reconciled and pushed."
           else
-            echo "⏭️ No upstream changes. Skipped push to save quota."
+            echo "Repository is already current; no push was needed."
           fi
