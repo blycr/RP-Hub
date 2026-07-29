@@ -618,6 +618,7 @@ createApp({
             apiKey: DEFAULT_API_CONFIG.apiKey,
             apiProviderId: DEFAULT_API_PROVIDER_ID,
             apiProviderKeys: {},
+            customApiProviders: [],
             modelProviderId: '',
             qualityModelProviderId: '',
             balancedModelProviderId: '',
@@ -663,116 +664,230 @@ createApp({
         };
         watch(() => settings.fontFamily, applyFontFamily, { immediate: true });
 
+        // RP-Hub-Sync dynamic API provider registry v2
         const showApiProviderSelector = ref(false);
         const selectedApiProviderId = ref(DEFAULT_API_PROVIDER_ID);
-        const customApiProviderOption = {
-            id: 'custom',
-            name: '自定义',
-            apiUrl: '',
-            icon: ''
-        };
-        const customApiProviderOption2 = {
-            id: 'custom2',
-            name: '自定义2',
-            apiUrl: '',
-            icon: ''
-        };
-        const customApiProviderOptions = [customApiProviderOption, customApiProviderOption2];
-        const isCustomApiProviderId = (id) => customApiProviderOptions.some(provider => provider.id === id);
-        const getCustomApiUrlKey = (id) => id === 'custom2' ? 'customApiUrl2' : 'customApiUrl';
-        const normalizeApiProviderUrl = (url) => String(url || '').replace(/\/+$/, '').toLowerCase();
-        const getApiProviderById = (id) => apiProviderOptions.find(provider => provider.id === id);
+        const normalizeApiProviderUrl = (url) => String(url || '').replace(/\s+/g, '').replace(/\/+$/, '');
+        const customApiProviderOptions = computed(() => Array.isArray(settings.customApiProviders)
+            ? settings.customApiProviders
+            : []);
+        const allApiProviderOptions = computed(() => [
+            ...apiProviderOptions,
+            ...customApiProviderOptions.value,
+        ]);
+        const isCustomApiProviderId = (id) => customApiProviderOptions.value.some(provider => provider.id === id);
+        const getApiProviderById = (id) => allApiProviderOptions.value.find(provider => provider.id === id);
         const getApiProviderByUrl = (url) => {
-            const currentUrl = normalizeApiProviderUrl(url);
-            return apiProviderOptions.find(provider => normalizeApiProviderUrl(provider.apiUrl) === currentUrl);
+            const currentUrl = normalizeApiProviderUrl(url).toLowerCase();
+            if (!currentUrl) return undefined;
+            return allApiProviderOptions.value.find(provider => (
+                normalizeApiProviderUrl(provider.apiUrl).toLowerCase() === currentUrl
+            ));
         };
-        const syncCurrentApiKeyToProvider = () => {
-            const providerId = settings.apiProviderId || selectedApiProvider.value.id || DEFAULT_API_PROVIDER_ID;
-            if (!settings.apiProviderKeys || typeof settings.apiProviderKeys !== 'object' || Array.isArray(settings.apiProviderKeys)) {
-                settings.apiProviderKeys = {};
-            }
-            settings.apiProviderKeys[providerId] = settings.apiKey || '';
-            if (isCustomApiProviderId(providerId)) {
-                settings[getCustomApiUrlKey(providerId)] = settings.apiUrl || '';
-            }
+        const getProviderDisplayName = (providerId) => (
+            getApiProviderById(providerId)?.name || providerId || '未配置供应商'
+        );
+        const createCustomApiProviderId = () => (
+            `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+        );
+
+        const migrateLegacyCustomApiProviders = () => {
+            const providers = Array.isArray(settings.customApiProviders)
+                ? settings.customApiProviders.filter(provider => provider && typeof provider === 'object')
+                : [];
+            const providerIds = new Set(providers.map(provider => provider.id));
+            const referencedProviderIds = new Set([
+                settings.apiProviderId,
+                settings.modelProviderId,
+                settings.qualityModelProviderId,
+                settings.balancedModelProviderId,
+                settings.fastModelProviderId,
+                settings.uiTemplateModelProviderId,
+            ].filter(Boolean));
+            const legacyProviders = [
+                { id: 'custom', name: '自定义', apiUrl: settings.customApiUrl || '' },
+                { id: 'custom2', name: '自定义2', apiUrl: settings.customApiUrl2 || '' },
+            ];
+
+            legacyProviders.forEach(provider => {
+                const hasKey = Boolean(settings.apiProviderKeys?.[provider.id]);
+                if (!providerIds.has(provider.id) && (provider.apiUrl || hasKey || referencedProviderIds.has(provider.id))) {
+                    providers.push(provider);
+                    providerIds.add(provider.id);
+                }
+            });
+
+            settings.customApiProviders = providers;
         };
+
         const normalizeApiProviderSettings = () => {
             if (!settings.apiProviderKeys || typeof settings.apiProviderKeys !== 'object' || Array.isArray(settings.apiProviderKeys)) {
                 settings.apiProviderKeys = {};
             }
-            [...apiProviderOptions, ...customApiProviderOptions].forEach(provider => {
+            migrateLegacyCustomApiProviders();
+
+            const builtinIds = new Set(apiProviderOptions.map(provider => provider.id));
+            const seenIds = new Set();
+            settings.customApiProviders = settings.customApiProviders
+                .map((provider, index) => ({
+                    id: String(provider.id || createCustomApiProviderId()),
+                    name: String(provider.name || `自定义 ${index + 1}`).trim() || `自定义 ${index + 1}`,
+                    apiUrl: String(provider.apiUrl || ''),
+                }))
+                .filter(provider => !builtinIds.has(provider.id) && !seenIds.has(provider.id) && seenIds.add(provider.id));
+
+            allApiProviderOptions.value.forEach(provider => {
                 if (typeof settings.apiProviderKeys[provider.id] !== 'string') {
                     settings.apiProviderKeys[provider.id] = '';
                 }
             });
 
             let provider = getApiProviderById(settings.apiProviderId);
-            if (!provider && !isCustomApiProviderId(settings.apiProviderId)) {
-                provider = getApiProviderByUrl(settings.apiUrl);
-                settings.apiProviderId = provider?.id || DEFAULT_API_PROVIDER_ID;
-            }
-            if (isCustomApiProviderId(settings.apiProviderId)) {
-                const urlKey = getCustomApiUrlKey(settings.apiProviderId);
-                settings[urlKey] = settings[urlKey] || settings.apiUrl || '';
-                settings.apiUrl = settings[urlKey];
-            } else {
-                provider = getApiProviderById(settings.apiProviderId) || getApiProviderById(DEFAULT_API_PROVIDER_ID);
+            if (!provider) {
+                provider = getApiProviderByUrl(settings.apiUrl) || getApiProviderById(DEFAULT_API_PROVIDER_ID);
                 settings.apiProviderId = provider.id;
-                settings.apiUrl = provider.apiUrl;
             }
 
-            selectedApiProviderId.value = settings.apiProviderId;
-            if (settings.apiKey && !settings.apiProviderKeys[settings.apiProviderId]) {
-                settings.apiProviderKeys[settings.apiProviderId] = settings.apiKey;
-            }
-            settings.apiKey = settings.apiProviderKeys[settings.apiProviderId] || '';
-        };
-        const selectedApiProvider = computed(() => {
-            const customProvider = customApiProviderOptions.find(provider => (
-                provider.id === settings.apiProviderId || provider.id === selectedApiProviderId.value
-            ));
-            if (customProvider) return customProvider;
-            const selectedProvider = getApiProviderById(settings.apiProviderId) || getApiProviderById(selectedApiProviderId.value);
-            if (selectedProvider) return selectedProvider;
-            return getApiProviderByUrl(settings.apiUrl) || customApiProviderOption;
-        });
-        const isCustomApiProvider = computed(() => isCustomApiProviderId(selectedApiProvider.value.id));
-        const selectApiProvider = (provider) => {
-            syncCurrentApiKeyToProvider();
             selectedApiProviderId.value = provider.id;
-            settings.apiProviderId = provider.id;
-            settings.apiUrl = isCustomApiProviderId(provider.id)
-                ? settings[getCustomApiUrlKey(provider.id)] || ''
-                : provider.apiUrl;
+            settings.apiUrl = provider.apiUrl || '';
+            if (settings.apiKey && !settings.apiProviderKeys[provider.id]) {
+                settings.apiProviderKeys[provider.id] = settings.apiKey;
+            }
             settings.apiKey = settings.apiProviderKeys[provider.id] || '';
-            showApiProviderSelector.value = false;
-            // 切换供应商后自动刷新模型列表
-            fetchModels().then(() => {
-                // 如果当前模型不在新供应商的模型列表中，重置为空让用户重新选择
-                const modelIds = availableModels.value.map(m => m.id || m);
-                if (settings.model && !modelIds.includes(settings.model)) {
-                    settings.model = '';
-                }
-            }).catch(() => { });
         };
-        normalizeApiProviderSettings();
 
-        watch(() => settings.apiKey, (newKey) => {
+        const selectedApiProvider = computed(() => (
+            getApiProviderById(settings.apiProviderId)
+            || getApiProviderById(selectedApiProviderId.value)
+            || getApiProviderById(DEFAULT_API_PROVIDER_ID)
+        ));
+        const isCustomApiProvider = computed(() => isCustomApiProviderId(selectedApiProvider.value?.id));
+
+        const syncCurrentApiKeyToProvider = () => {
+            const providerId = settings.apiProviderId || selectedApiProvider.value?.id || DEFAULT_API_PROVIDER_ID;
             if (!settings.apiProviderKeys || typeof settings.apiProviderKeys !== 'object' || Array.isArray(settings.apiProviderKeys)) {
                 settings.apiProviderKeys = {};
             }
-            const providerId = settings.apiProviderId || selectedApiProvider.value.id || DEFAULT_API_PROVIDER_ID;
+            settings.apiProviderKeys[providerId] = settings.apiKey || '';
+            const provider = getApiProviderById(providerId);
+            if (provider && isCustomApiProviderId(providerId)) {
+                provider.apiUrl = settings.apiUrl || '';
+            }
+        };
+
+        const selectApiProvider = (provider) => {
+            if (!provider) return;
+            syncCurrentApiKeyToProvider();
+            selectedApiProviderId.value = provider.id;
+            settings.apiProviderId = provider.id;
+            settings.apiUrl = provider.apiUrl || '';
+            settings.apiKey = settings.apiProviderKeys[provider.id] || '';
+            showApiProviderSelector.value = false;
+        };
+
+        const addCustomApiProvider = () => {
+            syncCurrentApiKeyToProvider();
+            const provider = {
+                id: createCustomApiProviderId(),
+                name: `自定义 ${customApiProviderOptions.value.length + 1}`,
+                apiUrl: '',
+            };
+            settings.customApiProviders = [...customApiProviderOptions.value, provider];
+            selectApiProvider(provider);
+        };
+
+        const updateSelectedCustomApiProvider = (field, value) => {
+            const providerId = selectedApiProvider.value?.id;
+            if (!isCustomApiProviderId(providerId) || !['name', 'apiUrl'].includes(field)) return;
+            const normalizedValue = field === 'name' ? String(value || '').trimStart() : String(value || '');
+            settings.customApiProviders = customApiProviderOptions.value.map(provider => (
+                provider.id === providerId ? { ...provider, [field]: normalizedValue } : provider
+            ));
+            if (field === 'apiUrl') settings.apiUrl = normalizedValue;
+        };
+
+        const getProviderReferences = (providerId) => {
+            const references = [];
+            const settingsBindings = [
+                ['modelProviderId', 'model', '当前聊天模型'],
+                ['qualityModelProviderId', 'qualityModel', '预设模型①'],
+                ['balancedModelProviderId', 'balancedModel', '预设模型②'],
+                ['fastModelProviderId', 'fastModel', '预设模型③'],
+                ['uiTemplateModelProviderId', 'uiTemplateModel', 'UI 模板模型'],
+            ];
+            settingsBindings.forEach(([providerKey, modelKey, label]) => {
+                if (settings[providerKey] === providerId) references.push({ target: settings, providerKey, modelKey, label });
+            });
+            if (memorySettings.embeddingProviderId === providerId) {
+                references.push({ target: memorySettings, providerKey: 'embeddingProviderId', modelKey: 'embeddingModel', label: '向量嵌入模型' });
+            }
+            if (memorySettings.classicProviderId === providerId) {
+                references.push({ target: memorySettings, providerKey: 'classicProviderId', modelKey: 'classicModel', label: '总结模式副模型' });
+            }
+            return references;
+        };
+
+        const deleteCustomApiProvider = (providerId) => {
+            const provider = getApiProviderById(providerId);
+            if (!provider || !isCustomApiProviderId(providerId)) return;
+            const references = getProviderReferences(providerId);
+            const impact = references.length
+                ? `\n\n同时会清空：${references.map(reference => reference.label).join('、')}。`
+                : '';
+            confirmAction(`确定删除“${provider.name}”吗？${impact}`, () => {
+                references.forEach(({ target, providerKey, modelKey }) => {
+                    target[providerKey] = '';
+                    target[modelKey] = '';
+                });
+                settings.customApiProviders = customApiProviderOptions.value.filter(item => item.id !== providerId);
+                delete settings.apiProviderKeys[providerId];
+                availableModels.value = availableModels.value.filter(model => model.providerId !== providerId);
+
+                if (settings.apiProviderId === providerId) {
+                    const fallback = getApiProviderById(DEFAULT_API_PROVIDER_ID) || apiProviderOptions[0];
+                    selectedApiProviderId.value = fallback.id;
+                    settings.apiProviderId = fallback.id;
+                    settings.apiUrl = fallback.apiUrl;
+                    settings.apiKey = settings.apiProviderKeys[fallback.id] || '';
+                }
+                showToast(`已删除供应商：${provider.name}`, 'success');
+            });
+        };
+
+        const getProviderApiConfig = (providerId, { allowIncomplete = false } = {}) => {
+            const resolvedProviderId = providerId || settings.apiProviderId;
+            const provider = getApiProviderById(resolvedProviderId);
+            if (!provider) throw new Error(`API 供应商不存在或已被删除：${resolvedProviderId || '未配置'}`);
+
+            const isCurrentProvider = provider.id === settings.apiProviderId;
+            const apiUrl = normalizeApiProviderUrl(isCurrentProvider ? (settings.apiUrl || provider.apiUrl) : provider.apiUrl);
+            const apiKey = String(
+                isCurrentProvider
+                    ? (settings.apiKey || settings.apiProviderKeys?.[provider.id] || '')
+                    : (settings.apiProviderKeys?.[provider.id] || '')
+            ).trim();
+            if (!allowIncomplete && (!apiUrl || !apiKey)) {
+                throw new Error(`请先完整配置 API 供应商：${provider.name}`);
+            }
+            return { providerId: provider.id, provider, apiUrl, apiKey };
+        };
+
+        normalizeApiProviderSettings();
+
+        watch(() => settings.apiKey, (newKey) => {
+            const providerId = settings.apiProviderId || selectedApiProvider.value?.id || DEFAULT_API_PROVIDER_ID;
             if (settings.apiProviderKeys[providerId] !== (newKey || '')) {
                 settings.apiProviderKeys[providerId] = newKey || '';
             }
         });
 
         watch(() => settings.apiUrl, (newUrl) => {
-            if (isCustomApiProviderId(settings.apiProviderId)) {
-                settings[getCustomApiUrlKey(settings.apiProviderId)] = newUrl || '';
-            }
+            const providerId = settings.apiProviderId;
+            if (!isCustomApiProviderId(providerId)) return;
+            settings.customApiProviders = customApiProviderOptions.value.map(provider => (
+                provider.id === providerId ? { ...provider, apiUrl: newUrl || '' } : provider
+            ));
         });
-
         const syncSettingsToGenerator = () => {
             const iframe = document.querySelector('iframe[src*="character"]');
             if (iframe && iframe.contentWindow) {
@@ -795,7 +910,7 @@ createApp({
             }
         });
 
-        // RP-Hub-Sync multi-provider model state
+        // RP-Hub-Sync direct chat model state
         const getModelModeKey = (mode) => mode === 'fast'
             ? 'fastModel'
             : mode === 'balanced'
@@ -806,7 +921,7 @@ createApp({
             const modelKey = getModelModeKey(mode);
             const providerId = settings[`${modelKey}ProviderId`];
             return settings.model === settings[modelKey]
-                && (!providerId || !settings.modelProviderId || settings.modelProviderId === providerId);
+                && (settings.modelProviderId || settings.apiProviderId) === (providerId || settings.apiProviderId);
         };
 
         watch(() => [
@@ -814,23 +929,9 @@ createApp({
             settings.apiKey,
             settings.model,
             settings.modelProviderId,
-            settings.qualityModelProviderId,
-            settings.balancedModelProviderId,
-            settings.fastModelProviderId,
-        ], ([, , newModel]) => {
-            if (!modelMatchesMode('fast') && !modelMatchesMode('balanced')) {
-                settings.qualityModel = newModel;
-                settings.qualityModelProviderId = settings.modelProviderId || settings.apiProviderId;
-            }
-
-            if (modelMatchesMode('fast')) {
-                currentModelMode.value = 'fast';
-            } else if (modelMatchesMode('balanced')) {
-                currentModelMode.value = 'balanced';
-            } else {
-                currentModelMode.value = 'quality';
-            }
-
+            settings.customApiProviders,
+            settings.apiProviderKeys,
+        ], () => {
             syncSettingsToGenerator();
         }, { deep: true });
 
@@ -854,11 +955,16 @@ createApp({
             syncSettingsToGenerator();
         });
 
-        const currentModelMode = ref('quality');
+        const currentModelMode = computed(() => {
+            if (modelMatchesMode('fast')) return 'fast';
+            if (modelMatchesMode('balanced')) return 'balanced';
+            if (modelMatchesMode('quality')) return 'quality';
+            return 'custom';
+        });
         const modelMode = computed({
             get: () => currentModelMode.value,
             set: (val) => {
-                currentModelMode.value = val;
+                if (!['quality', 'balanced', 'fast'].includes(val)) return;
                 const modelKey = getModelModeKey(val);
                 settings.model = settings[modelKey];
                 settings.modelProviderId = settings[`${modelKey}ProviderId`] || settings.apiProviderId;
@@ -3671,10 +3777,17 @@ ${content}
             const searchQuery = modelSelectionTarget.value === 'memoryEmbeddingModel' ? 'embedding' : modelSearchQuery.value;
             if (searchQuery) {
                 const query = searchQuery.toLowerCase();
-                result = result.filter(m => m.id.toLowerCase().includes(query));
+                result = result.filter(m => (
+                    m.id.toLowerCase().includes(query)
+                    || getProviderDisplayName(m.providerId).toLowerCase().includes(query)
+                ));
             }
 
-            return result.sort((a, b) => a.id.localeCompare(b.id));
+            return result.sort((a, b) => {
+                const providerCompare = getProviderDisplayName(a.providerId)
+                    .localeCompare(getProviderDisplayName(b.providerId));
+                return providerCompare || a.id.localeCompare(b.id);
+            });
         });
 
         const getCharacterWICount = (char) => {
@@ -4194,53 +4307,57 @@ ${content}
         };
         const getApiEndpoint = (endpoint) => getOpenAICompatUrlForBase(settings.apiUrl, endpoint);
 
+        // RP-Hub-Sync parallel provider model aggregation
         const fetchModels = async (isManual = false) => {
-            try {
-                if (isManual) showToast('正在获取模型列表...', 'info');
+            if (isManual) showToast('正在获取模型列表...', 'info');
 
-                const providers = [...apiProviderOptions, ...customApiProviderOptions];
-                const allModels = [];
-
-                for (const provider of providers) {
-                    const providerId = provider.id;
-                    let apiUrl = provider.apiUrl;
-                    let apiKey = settings.apiProviderKeys?.[providerId] || '';
-
-                    if (isCustomApiProviderId(providerId)) {
-                        apiUrl = settings[getCustomApiUrlKey(providerId)] || '';
-                        apiKey = settings.apiProviderKeys?.[providerId] || settings.apiKey || '';
-                    }
-
-                    if (providerId === settings.apiProviderId) {
-                        apiUrl = settings.apiUrl || apiUrl;
-                        apiKey = settings.apiKey || apiKey;
-                    }
-
-                    if (!apiUrl || !apiKey) continue;
-
+            const configuredProviders = allApiProviderOptions.value
+                .map(provider => {
                     try {
-                        const url = getOpenAICompatUrlForBase(apiUrl, 'models');
-                        const response = await fetch(url, {
-                            headers: { 'Authorization': `Bearer ${apiKey}` }
-                        });
-                        if (!response.ok) continue;
-                        const data = await response.json();
-                        const models = (data.data || []).map(model => ({
-                            ...model,
-                            providerId,
-                            providerName: provider.name,
-                        }));
-                        allModels.push(...models);
+                        return getProviderApiConfig(provider.id, { allowIncomplete: true });
                     } catch (error) {
-                        console.warn(`Failed to fetch models from ${provider.name}:`, error);
+                        console.warn(error.message || error);
+                        return null;
                     }
-                }
+                })
+                .filter(config => config?.apiUrl && config?.apiKey);
 
-                availableModels.value = allModels;
-                if (isManual) showToast(`成功获取 ${availableModels.value.length} 个模型`, 'success');
-            } catch (error) {
-                console.error(error);
-                showToast('获取模型失败: ' + error.message, 'error');
+            const results = await Promise.allSettled(configuredProviders.map(async config => {
+                const url = getOpenAICompatUrlForBase(config.apiUrl, 'models');
+                const response = await fetch(url, {
+                    headers: { 'Authorization': `Bearer ${config.apiKey}` }
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                return (Array.isArray(data.data) ? data.data : []).map(model => ({
+                    ...model,
+                    providerId: config.providerId,
+                    providerName: config.provider.name,
+                }));
+            }));
+
+            const allModels = [];
+            let failedCount = 0;
+            results.forEach((result, index) => {
+                if (result.status === 'fulfilled') {
+                    allModels.push(...result.value);
+                } else {
+                    failedCount++;
+                    console.warn(
+                        `Failed to fetch models from ${configuredProviders[index].provider.name}:`,
+                        result.reason
+                    );
+                }
+            });
+            availableModels.value = allModels;
+
+            if (isManual) {
+                const successCount = results.length - failedCount;
+                const type = failedCount > 0 ? 'info' : 'success';
+                showToast(
+                    `模型刷新完成：${successCount} 个供应商成功，${failedCount} 个失败，共 ${allModels.length} 个模型`,
+                    type
+                );
             }
         };
 
@@ -4283,6 +4400,10 @@ ${content}
 
         const selectModel = (modelId, providerId) => {
             const selectedProviderId = providerId || settings.apiProviderId;
+            if (!getApiProviderById(selectedProviderId)) {
+                showToast(`API 供应商不存在或已被删除：${selectedProviderId}`, 'error');
+                return;
+            }
 
             if (modelSelectionTarget.value === 'memoryEmbeddingModel') {
                 memorySettings.embeddingModel = modelId;
@@ -4299,16 +4420,6 @@ ${content}
 
             settings[modelSelectionTarget.value] = modelId;
             settings[`${modelSelectionTarget.value}ProviderId`] = selectedProviderId;
-
-            if (
-                (modelSelectionTarget.value === 'qualityModel' && currentModelMode.value === 'quality') ||
-                (modelSelectionTarget.value === 'balancedModel' && currentModelMode.value === 'balanced') ||
-                (modelSelectionTarget.value === 'fastModel' && currentModelMode.value === 'fast')
-            ) {
-                settings.model = modelId;
-                settings.modelProviderId = selectedProviderId;
-            }
-
             showModelSelector.value = false;
         };
 
@@ -5115,25 +5226,7 @@ ${content}
         let _wasCancelled = false;
         const getApiConfigForModel = (modelKey, fallbackProviderId = null) => {
             const providerId = fallbackProviderId || settings[`${modelKey}ProviderId`] || settings.apiProviderId;
-            const provider = getApiProviderById(providerId);
-
-            let apiUrl = settings.apiUrl;
-            let apiKey = settings.apiKey;
-
-            if (providerId && providerId !== settings.apiProviderId) {
-                if (isCustomApiProviderId(providerId)) {
-                    apiUrl = settings[getCustomApiUrlKey(providerId)] || apiUrl;
-                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
-                } else if (provider) {
-                    apiUrl = provider.apiUrl;
-                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
-                }
-            }
-
-            return {
-                apiUrl: String(apiUrl || '').replace(/\s+/g, '').replace(/\/+$/, ''),
-                apiKey: String(apiKey || '').trim(),
-            };
+            return getProviderApiConfig(providerId);
         };
 
         const generateResponse = async (startTime = null, options = {}) => {
@@ -6536,18 +6629,12 @@ ${content}
         const requestClassicMemorySummary = async (job, signal) => {
             const model = String(memorySettings.classicModel || '').trim();
             const providerId = memorySettings.classicProviderId || settings.apiProviderId;
-            const provider = getApiProviderById(providerId);
-            let apiUrl = (settings.classicApiUrl || settings.apiUrl || '').replace(/\s+/g, '');
-            let apiKey = (settings.classicApiKey || settings.apiKey || '').trim();
-
-            if (providerId && providerId !== settings.apiProviderId) {
-                if (isCustomApiProviderId(providerId)) {
-                    apiUrl = (settings[getCustomApiUrlKey(providerId)] || apiUrl).replace(/\s+/g, '');
-                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
-                } else if (provider) {
-                    apiUrl = provider.apiUrl;
-                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
-                }
+            const providerConfig = getProviderApiConfig(providerId);
+            let apiUrl = providerConfig.apiUrl;
+            let apiKey = providerConfig.apiKey;
+            if (!memorySettings.classicProviderId) {
+                apiUrl = normalizeApiProviderUrl(settings.classicApiUrl || apiUrl);
+                apiKey = String(settings.classicApiKey || apiKey).trim();
             }
 
             if (!apiUrl || !apiKey) throw new Error('请先配置 API 地址和 Key');
@@ -6825,18 +6912,12 @@ ${content}
         const requestMemoryEmbeddings = async (inputs, signal) => {
             const model = getMemoryEmbeddingModel();
             const providerId = memorySettings.embeddingProviderId || settings.apiProviderId;
-            const provider = getApiProviderById(providerId);
-            let apiUrl = (settings.embeddingApiUrl || settings.apiUrl || '').replace(/\s+/g, '');
-            let apiKey = (settings.embeddingApiKey || settings.apiKey || '').trim();
-
-            if (providerId && providerId !== settings.apiProviderId) {
-                if (isCustomApiProviderId(providerId)) {
-                    apiUrl = (settings[getCustomApiUrlKey(providerId)] || apiUrl).replace(/\s+/g, '');
-                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
-                } else if (provider) {
-                    apiUrl = provider.apiUrl;
-                    apiKey = settings.apiProviderKeys?.[providerId] || apiKey;
-                }
+            const providerConfig = getProviderApiConfig(providerId);
+            let apiUrl = providerConfig.apiUrl;
+            let apiKey = providerConfig.apiKey;
+            if (!memorySettings.embeddingProviderId) {
+                apiUrl = normalizeApiProviderUrl(settings.embeddingApiUrl || apiUrl);
+                apiKey = String(settings.embeddingApiKey || apiKey).trim();
             }
 
             if (!apiUrl || !apiKey) throw new Error('请先配置 API 地址和 Key');
@@ -10942,7 +11023,7 @@ ${memoryFragmentSection}
             showUpdateModal, updateCountdown, latestUpdate, closeUpdateModal, isUpdateScrolledToBottom, checkUpdateScroll, // Update Modal
             showConfirmModal, confirmMessage, modelMode, showNoMemoryNeededModal, // Export for template
             isGenerating, isRemoteGenerating, remoteEstimatedTime, isReceiving, isThinking, hasActiveToolInlineWork, isConversationBusy, activeToolContinuationMessageId, activeToolContinuationHasResponse, userInput, modelSearchQuery, activeModelTag, modelTags, characterSearchQuery, filteredModels, filteredCharacters,
-            user, settings, apiProviderOptions, selectedApiProvider, isCustomApiProvider, customApiProviderOptions, showApiProviderSelector, selectApiProvider, characters, currentCharacter, currentCharacterIndex, chatHistory, displayedChatMessages, handleChatScroll, presets, presetRoleOptions, fontFamilyOptions, imageStyleOptions, imageSizeOptions, imageGenCountOptions, scopeOptions, uiTemplatePlacementOptions, worldInfoPositionOptions, getPresetRoleLabel, getPresetRoleDisplayLabel, getPresetRoleBadgeClass, regexScripts, worldInfo,
+            user, settings, apiProviderOptions, selectedApiProvider, isCustomApiProvider, customApiProviderOptions, showApiProviderSelector, selectApiProvider, addCustomApiProvider, updateSelectedCustomApiProvider, deleteCustomApiProvider, getProviderDisplayName, characters, currentCharacter, currentCharacterIndex, chatHistory, displayedChatMessages, handleChatScroll, presets, presetRoleOptions, fontFamilyOptions, imageStyleOptions, imageSizeOptions, imageGenCountOptions, scopeOptions, uiTemplatePlacementOptions, worldInfoPositionOptions, getPresetRoleLabel, getPresetRoleDisplayLabel, getPresetRoleBadgeClass, regexScripts, worldInfo,
             activeTools, activeToolAggressivenessOptions: ACTIVE_TOOL_AGGRESSIVENESS_OPTIONS, editingActiveTool, normalizeActiveTools, isWebActiveTool, getActiveToolDisplayDescription, getActiveToolResultCountMin, getActiveToolResultCountMax,
             getToolCallModeText, hasThinkingOrTools, isMessageThinkingOrRunning, isThinkingSummaryOpen, toggleThinkingSummary, markThinkingSummaryDetailOpened, getTimelineSteps,
             chatRoundStats, conversationBodyLength, summaryCompressedBodyLength,
