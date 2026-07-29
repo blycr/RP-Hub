@@ -618,6 +618,7 @@ createApp({
             apiKey: DEFAULT_API_CONFIG.apiKey,
             apiProviderId: DEFAULT_API_PROVIDER_ID,
             apiProviderKeys: {},
+            apiProviderModes: {},
             customApiProviders: [],
             modelProviderId: '',
             qualityModelProviderId: '',
@@ -626,10 +627,6 @@ createApp({
             uiTemplateModelProviderId: '',
             customApiUrl: '',
             customApiUrl2: '',
-            embeddingApiUrl: '',
-            embeddingApiKey: '',
-            classicApiUrl: '',
-            classicApiKey: '',
             model: DEFAULT_API_CONFIG.qualityModel,
             contextSize: MAX_CONTEXT_SIZE,
             temperature: 1.0,
@@ -664,10 +661,24 @@ createApp({
         };
         watch(() => settings.fontFamily, applyFontFamily, { immediate: true });
 
-        // RP-Hub-Sync dynamic API provider registry v2
+        // RP-Hub-Sync dynamic API provider registry v3
+        const apiAdapters = window.RPHubApiAdapters;
+        if (!apiAdapters) throw new Error('RP-Hub API 协议适配器未加载');
+        const CHAT_PROTOCOL_OPENAI_CHAT = apiAdapters.CHAT_PROTOCOL_OPENAI_CHAT;
+        const CHAT_PROTOCOL_OPENAI_RESPONSES = apiAdapters.CHAT_PROTOCOL_OPENAI_RESPONSES;
+        const EMBEDDING_PROTOCOL_OPENAI = apiAdapters.EMBEDDING_PROTOCOL_OPENAI;
+        const EMBEDDING_PROTOCOL_NONE = apiAdapters.EMBEDDING_PROTOCOL_NONE;
+        const chatProtocolOptions = [
+            { value: CHAT_PROTOCOL_OPENAI_CHAT, label: 'Chat Completions' },
+            { value: CHAT_PROTOCOL_OPENAI_RESPONSES, label: 'Responses' },
+        ];
+        const embeddingProtocolOptions = [
+            { value: EMBEDDING_PROTOCOL_OPENAI, label: 'OpenAI Embeddings' },
+            { value: EMBEDDING_PROTOCOL_NONE, label: '不启用向量' },
+        ];
         const showApiProviderSelector = ref(false);
         const selectedApiProviderId = ref(DEFAULT_API_PROVIDER_ID);
-        const normalizeApiProviderUrl = (url) => String(url || '').replace(/\s+/g, '').replace(/\/+$/, '');
+        const normalizeApiProviderUrl = apiAdapters.normalizeBaseUrl;
         const customApiProviderOptions = computed(() => Array.isArray(settings.customApiProviders)
             ? settings.customApiProviders
             : []);
@@ -689,6 +700,19 @@ createApp({
         );
         const createCustomApiProviderId = () => (
             `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+        );
+        const normalizeProviderMode = (mode = {}) => ({
+            chat: [CHAT_PROTOCOL_OPENAI_CHAT, CHAT_PROTOCOL_OPENAI_RESPONSES].includes(mode.chat)
+                ? mode.chat
+                : CHAT_PROTOCOL_OPENAI_CHAT,
+            embedding: [EMBEDDING_PROTOCOL_OPENAI, EMBEDDING_PROTOCOL_NONE].includes(mode.embedding)
+                ? mode.embedding
+                : EMBEDDING_PROTOCOL_OPENAI,
+        });
+        const getProviderModes = (providerId) => normalizeProviderMode(settings.apiProviderModes?.[providerId]);
+        const getProviderChatProtocol = (providerId) => getProviderModes(providerId).chat;
+        const isProviderEmbeddingEnabled = (providerId) => (
+            getProviderModes(providerId).embedding === EMBEDDING_PROTOCOL_OPENAI
         );
 
         const migrateLegacyCustomApiProviders = () => {
@@ -724,6 +748,9 @@ createApp({
             if (!settings.apiProviderKeys || typeof settings.apiProviderKeys !== 'object' || Array.isArray(settings.apiProviderKeys)) {
                 settings.apiProviderKeys = {};
             }
+            if (!settings.apiProviderModes || typeof settings.apiProviderModes !== 'object' || Array.isArray(settings.apiProviderModes)) {
+                settings.apiProviderModes = {};
+            }
             migrateLegacyCustomApiProviders();
 
             const builtinIds = new Set(apiProviderOptions.map(provider => provider.id));
@@ -736,11 +763,14 @@ createApp({
                 }))
                 .filter(provider => !builtinIds.has(provider.id) && !seenIds.has(provider.id) && seenIds.add(provider.id));
 
+            const normalizedModes = {};
             allApiProviderOptions.value.forEach(provider => {
                 if (typeof settings.apiProviderKeys[provider.id] !== 'string') {
                     settings.apiProviderKeys[provider.id] = '';
                 }
+                normalizedModes[provider.id] = normalizeProviderMode(settings.apiProviderModes[provider.id]);
             });
+            settings.apiProviderModes = normalizedModes;
 
             let provider = getApiProviderById(settings.apiProviderId);
             if (!provider) {
@@ -761,6 +791,7 @@ createApp({
             || getApiProviderById(selectedApiProviderId.value)
             || getApiProviderById(DEFAULT_API_PROVIDER_ID)
         ));
+        const selectedProviderModes = computed(() => getProviderModes(selectedApiProvider.value?.id));
         const isCustomApiProvider = computed(() => isCustomApiProviderId(selectedApiProvider.value?.id));
 
         const syncCurrentApiKeyToProvider = () => {
@@ -793,6 +824,10 @@ createApp({
                 apiUrl: '',
             };
             settings.customApiProviders = [...customApiProviderOptions.value, provider];
+            settings.apiProviderModes = {
+                ...settings.apiProviderModes,
+                [provider.id]: normalizeProviderMode(),
+            };
             selectApiProvider(provider);
         };
 
@@ -827,6 +862,29 @@ createApp({
             return references;
         };
 
+        const updateSelectedProviderMode = (kind, value) => {
+            const providerId = selectedApiProvider.value?.id;
+            if (!providerId || !['chat', 'embedding'].includes(kind)) return;
+            const nextMode = normalizeProviderMode({ ...getProviderModes(providerId), [kind]: value });
+            const applyMode = () => {
+                if (kind === 'embedding' && nextMode.embedding === EMBEDDING_PROTOCOL_NONE
+                    && memorySettings.embeddingProviderId === providerId) {
+                    memorySettings.embeddingProviderId = '';
+                    memorySettings.embeddingModel = '';
+                }
+                settings.apiProviderModes = {
+                    ...settings.apiProviderModes,
+                    [providerId]: nextMode,
+                };
+            };
+            if (kind === 'embedding' && nextMode.embedding === EMBEDDING_PROTOCOL_NONE
+                && memorySettings.embeddingProviderId === providerId) {
+                confirmAction('关闭该供应商的向量能力会清空当前向量模型绑定，是否继续？', applyMode);
+                return;
+            }
+            applyMode();
+        };
+
         const deleteCustomApiProvider = (providerId) => {
             const provider = getApiProviderById(providerId);
             if (!provider || !isCustomApiProviderId(providerId)) return;
@@ -841,6 +899,9 @@ createApp({
                 });
                 settings.customApiProviders = customApiProviderOptions.value.filter(item => item.id !== providerId);
                 delete settings.apiProviderKeys[providerId];
+                const nextModes = { ...settings.apiProviderModes };
+                delete nextModes[providerId];
+                settings.apiProviderModes = nextModes;
                 availableModels.value = availableModels.value.filter(model => model.providerId !== providerId);
 
                 if (settings.apiProviderId === providerId) {
@@ -869,7 +930,80 @@ createApp({
             if (!allowIncomplete && (!apiUrl || !apiKey)) {
                 throw new Error(`请先完整配置 API 供应商：${provider.name}`);
             }
-            return { providerId: provider.id, provider, apiUrl, apiKey };
+            const modes = getProviderModes(provider.id);
+            return {
+                providerId: provider.id,
+                provider,
+                apiUrl,
+                apiKey,
+                chatProtocol: modes.chat,
+                embeddingProtocol: modes.embedding,
+            };
+        };
+
+        const ensureLegacyMemoryProvider = (kind, apiUrl, apiKey) => {
+            const normalizedUrl = normalizeApiProviderUrl(apiUrl);
+            const normalizedKey = String(apiKey || '').trim();
+            const matched = allApiProviderOptions.value.find(provider => (
+                normalizeApiProviderUrl(provider.apiUrl) === normalizedUrl
+                && String(settings.apiProviderKeys?.[provider.id] || '').trim() === normalizedKey
+            ));
+            if (matched) return matched.id;
+
+            const providerId = `legacy-memory-${kind}`;
+            const existing = getApiProviderById(providerId);
+            if (existing) return existing.id;
+            const provider = {
+                id: providerId,
+                name: kind === 'embedding' ? '迁移的向量供应商' : '迁移的总结供应商',
+                apiUrl: normalizedUrl,
+            };
+            settings.customApiProviders = [...customApiProviderOptions.value, provider];
+            settings.apiProviderKeys[providerId] = normalizedKey;
+            settings.apiProviderModes = {
+                ...settings.apiProviderModes,
+                [providerId]: {
+                    chat: CHAT_PROTOCOL_OPENAI_CHAT,
+                    embedding: kind === 'embedding' ? EMBEDDING_PROTOCOL_OPENAI : EMBEDDING_PROTOCOL_NONE,
+                },
+            };
+            return providerId;
+        };
+
+        const migrateLegacyMemoryProviders = (savedSettings = {}) => {
+            const migrations = [
+                {
+                    kind: 'embedding',
+                    url: savedSettings.embeddingApiUrl,
+                    key: savedSettings.embeddingApiKey,
+                    providerKey: 'embeddingProviderId',
+                    modelKey: 'embeddingModel',
+                },
+                {
+                    kind: 'classic',
+                    url: savedSettings.classicApiUrl,
+                    key: savedSettings.classicApiKey,
+                    providerKey: 'classicProviderId',
+                    modelKey: 'classicModel',
+                },
+            ];
+            migrations.forEach(migration => {
+                if (memorySettings[migration.providerKey]) return;
+                if (migration.url || migration.key) {
+                    memorySettings[migration.providerKey] = ensureLegacyMemoryProvider(
+                        migration.kind,
+                        migration.url,
+                        migration.key
+                    );
+                } else if (memorySettings[migration.modelKey]) {
+                    memorySettings[migration.providerKey] = settings.apiProviderId;
+                }
+            });
+            delete settings.embeddingApiUrl;
+            delete settings.embeddingApiKey;
+            delete settings.classicApiUrl;
+            delete settings.classicApiKey;
+            normalizeApiProviderSettings();
         };
 
         normalizeApiProviderSettings();
@@ -2470,6 +2604,7 @@ createApp({
                 const savedMemorySettings = await getStoredValue('memory_settings');
                 if (savedMemorySettings) Object.assign(memorySettings, savedMemorySettings);
                 normalizeMemorySettings();
+                migrateLegacyMemoryProviders(savedSettings || {});
 
                 const savedTokenUsageHistory = await getStoredValue('token_usage_history');
                 if (Array.isArray(savedTokenUsageHistory)) {
@@ -3761,7 +3896,10 @@ ${content}
         });
 
         const filteredModels = computed(() => {
-            let result = availableModels.value;
+            // RP-Hub-Sync protocol-aware model filtering v3
+            let result = modelSelectionTarget.value === 'memoryEmbeddingModel'
+                ? availableModels.value.filter(model => isProviderEmbeddingEnabled(model.providerId || settings.apiProviderId))
+                : availableModels.value;
 
             if (activeModelTag.value && activeModelTag.value !== 'all') {
                 if (activeModelTag.value === 'other') {
@@ -3774,7 +3912,7 @@ ${content}
                 }
             }
 
-            const searchQuery = modelSelectionTarget.value === 'memoryEmbeddingModel' ? 'embedding' : modelSearchQuery.value;
+            const searchQuery = modelSearchQuery.value;
             if (searchQuery) {
                 const query = searchQuery.toLowerCase();
                 result = result.filter(m => (
@@ -4307,7 +4445,7 @@ ${content}
         };
         const getApiEndpoint = (endpoint) => getOpenAICompatUrlForBase(settings.apiUrl, endpoint);
 
-        // RP-Hub-Sync parallel provider model aggregation
+        // RP-Hub-Sync protocol-aware model aggregation v3
         const fetchModels = async (isManual = false) => {
             if (isManual) showToast('正在获取模型列表...', 'info');
 
@@ -4323,13 +4461,14 @@ ${content}
                 .filter(config => config?.apiUrl && config?.apiKey);
 
             const results = await Promise.allSettled(configuredProviders.map(async config => {
-                const url = getOpenAICompatUrlForBase(config.apiUrl, 'models');
-                const response = await fetch(url, {
-                    headers: { 'Authorization': `Bearer ${config.apiKey}` }
+                const request = apiAdapters.buildModelListRequest({
+                    baseUrl: config.apiUrl,
+                    apiKey: config.apiKey,
                 });
+                const response = await fetch(request.url, request.init);
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
-                return (Array.isArray(data.data) ? data.data : []).map(model => ({
+                return apiAdapters.parseModelList(data).map(model => ({
                     ...model,
                     providerId: config.providerId,
                     providerName: config.provider.name,
@@ -4361,16 +4500,14 @@ ${content}
             }
         };
 
-        const openModelSelector = (target) => {
-            modelSelectionTarget.value = target;
-            if (target === 'memoryEmbeddingModel') {
-                modelSearchQuery.value = 'embedding';
-                activeModelTag.value = 'all';
-            } else if (modelSearchQuery.value === 'embedding') {
-                modelSearchQuery.value = '';
-            }
-            showModelSelector.value = true;
-        };
+        // RP-Hub-Sync protocol-aware model selection v3
+        const manualModelProviderId = ref('');
+        const manualModelId = ref('');
+        const modelSelectorProviderOptions = computed(() => (
+            modelSelectionTarget.value === 'memoryEmbeddingModel'
+                ? allApiProviderOptions.value.filter(provider => isProviderEmbeddingEnabled(provider.id))
+                : allApiProviderOptions.value
+        ));
 
         const getSelectedModelState = () => {
             const target = modelSelectionTarget.value;
@@ -4392,6 +4529,23 @@ ${content}
             };
         };
 
+        const resetManualModelSelection = () => {
+            const selected = getSelectedModelState();
+            const compatibleProviders = modelSelectorProviderOptions.value;
+            manualModelProviderId.value = compatibleProviders.some(provider => provider.id === selected.providerId)
+                ? selected.providerId
+                : (compatibleProviders[0]?.id || '');
+            manualModelId.value = selected.modelId || '';
+        };
+
+        const openModelSelector = (target) => {
+            modelSelectionTarget.value = target;
+            modelSearchQuery.value = '';
+            activeModelTag.value = 'all';
+            resetManualModelSelection();
+            showModelSelector.value = true;
+        };
+
         const isModelSelected = (model) => {
             const selected = getSelectedModelState();
             return selected.modelId === model.id
@@ -4406,6 +4560,10 @@ ${content}
             }
 
             if (modelSelectionTarget.value === 'memoryEmbeddingModel') {
+                if (!isProviderEmbeddingEnabled(selectedProviderId)) {
+                    showToast(`供应商“${getProviderDisplayName(selectedProviderId)}”未启用向量能力`, 'error');
+                    return;
+                }
                 memorySettings.embeddingModel = modelId;
                 memorySettings.embeddingProviderId = selectedProviderId;
                 showModelSelector.value = false;
@@ -4423,6 +4581,19 @@ ${content}
             showModelSelector.value = false;
         };
 
+        const selectManualModel = () => {
+            const modelId = String(manualModelId.value || '').trim();
+            const providerId = manualModelProviderId.value;
+            if (!providerId) {
+                showToast('请选择供应商', 'error');
+                return;
+            }
+            if (!modelId) {
+                showToast('请输入模型 ID', 'error');
+                return;
+            }
+            selectModel(modelId, providerId);
+        };
         const checkConnectionStatus = async (status, latency, label, request, isConnected = response => response.ok) => {
             status.value = 'checking';
             const controller = new AbortController();
@@ -4769,8 +4940,8 @@ ${content}
                 markUiTemplateStatus('skipped', '未选模型');
                 return false;
             }
-            const { apiUrl: uiApiUrl, apiKey: uiApiKey } = getApiConfigForModel('uiTemplateModel');
-            const url = getOpenAICompatUrlForBase(uiApiUrl, 'chat/completions');
+            // RP-Hub-Sync API adapter routes v3
+            const uiProviderConfig = getApiConfigForModel('uiTemplateModel');
 
             try {
                 const updateRun = startUiTemplateUpdateRun();
@@ -4828,17 +4999,14 @@ ${content}
                     try {
                         const currentVariableJson = JSON.stringify(template.variableState || {}, null, 2);
                         const variableSchemaText = stringifyUiSchema(template.variableSchema).trim();
-                        const response = await fetch(url, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${uiApiKey}`
-                            },
-                            body: JSON.stringify({
-                                model,
-                                temperature: 1,
-                                stream: false,
-                                messages: [
+                        const uiRequest = apiAdapters.buildChatRequest({
+                            protocol: uiProviderConfig.chatProtocol,
+                            baseUrl: uiProviderConfig.apiUrl,
+                            apiKey: uiProviderConfig.apiKey,
+                            model,
+                            temperature: 1,
+                            stream: false,
+                            messages: [
                                     {
                                         role: 'system',
                                         content: [
@@ -4868,19 +5036,24 @@ ${content}
                                             recentMessages
                                         }, null, 2)
                                     }
-                                ]
-                            }),
-                            signal: updateRun.signal
+                                ],
+                            signal: updateRun.signal,
                         });
+                        const response = await fetch(uiRequest.url, uiRequest.init);
                         if (!isCurrentRun()) return;
-                        if (!response.ok) throw new Error(`API Error: ${response.status}`);
-                        const data = await response.json();
+                        const rawText = await response.text();
+                        if (!response.ok) {
+                            let errorPayload = null;
+                            try { errorPayload = JSON.parse(rawText); } catch (_) { }
+                            throw new Error(extractApiErrorMessage(errorPayload, response.status) || rawText || `API Error: ${response.status}`);
+                        }
+                        const parsedResponse = apiAdapters.parseChatText(uiRequest.protocol, rawText);
                         if (!isCurrentRun()) return;
-                        let content = data.choices?.[0]?.message?.content || '';
+                        let content = parsedResponse.text || '';
                         console.log(`[UI模板变量分析] ${template.name || template.id} 原始返回:`, content);
                         const parsed = parseUiTemplateUpdateJson(content);
                         const updates = normalizeUiTemplateUpdates(parsed);
-                        recordApiUsage(getApiUsagePayload(data), {
+                        recordApiUsage(parsedResponse.usage, {
                             type: 'ui_template',
                             model,
                             detail: template.name || ''
@@ -6072,23 +6245,19 @@ ${content}
             };
 
             try {
-                        const { apiUrl: requestApiUrl, apiKey: requestApiKey } = getApiConfigForModel('model');
-                        const url = getOpenAICompatUrlForBase(requestApiUrl, 'chat/completions');
-                        const response = await fetch(url, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${requestApiKey}`
-                            },
-                            body: JSON.stringify({
-                                model: requestModel,
-                                messages: apiMessages,
-                                temperature: settings.temperature,
-                                stream: settings.stream,
-                                ...(settings.stream ? { stream_options: { include_usage: true } } : {})
-                            }),
-                            signal: abortController.value.signal
+                        const requestProviderConfig = getApiConfigForModel('model');
+                        const chatRequest = apiAdapters.buildChatRequest({
+                            protocol: requestProviderConfig.chatProtocol,
+                            baseUrl: requestProviderConfig.apiUrl,
+                            apiKey: requestProviderConfig.apiKey,
+                            model: requestModel,
+                            messages: apiMessages,
+                            temperature: settings.temperature,
+                            stream: settings.stream,
+                            signal: abortController.value.signal,
                         });
+                        const response = await fetch(chatRequest.url, chatRequest.init);
+
 
                         if (!response.ok) {
                             let errorDetail = '';
@@ -6159,28 +6328,22 @@ ${content}
                                         if (dataStr === '[DONE]') continue;
 
                                         try {
-                                            const data = JSON.parse(dataStr);
-                                            const apiError = extractApiErrorMessage(data, response.status);
-                                            if (apiError) throwApiError(apiError);
-                                            responseUsage = getApiUsagePayload(data) || responseUsage;
+                                            const payload = dataStr === '[DONE]' ? dataStr : JSON.parse(dataStr);
+                                            const streamEvent = apiAdapters.parseChatStreamEvent(chatRequest.protocol, payload);
+                                            if (streamEvent.error) throwApiError(streamEvent.error);
+                                            responseUsage = streamEvent.usage || responseUsage;
 
-                                            const choice = data.choices?.[0];
-                                            if (!choice) continue;
-
-                                            const delta = choice.delta || choice.message || {};
-                                            const rawContent = delta.content || '';
+                                            const rawContent = streamEvent.textDelta || '';
                                             if (rawContent) rawAssistantContentForLog += rawContent;
                                             const content = (!assistantMessage && !String(rawContent).trim()) ? '' : rawContent;
-                                            const reasoning = extractNativeReasoning(delta) || extractNativeReasoning(choice);
+                                            const reasoning = streamEvent.reasoningDelta || '';
                                             if (reasoning) nativeReasoningForLog += reasoning;
 
                                             if (content || reasoning) {
                                                 let seededContent = false;
                                                 let seededReasoning = false;
                                                 if (!assistantMessage) {
-                                                    if (reasoning) {
-                                                        isThinking.value = true;
-                                                    }
+                                                    if (reasoning) isThinking.value = true;
                                                     assistantMessage = ensureAssistantMessage(content, reasoning);
                                                     seededContent = !!content;
                                                     seededReasoning = !!reasoning;
@@ -6203,8 +6366,8 @@ ${content}
                                                     isThinking.value = false;
                                                     collapseNativeReasoning(assistantMessage);
                                                 }
-
                                             }
+
                                         } catch (e) {
                                             if (e.isApiError) throw e;
                                             if (/error/i.test(dataStr)) throw new Error(formatApiErrorMessage(response.status, dataStr));
@@ -6215,93 +6378,27 @@ ${content}
                             }
                             flushNativeReasoning();
                         } else {
-                            // Non-streaming response handling
-                            // Compatibility Fix: Some APIs force return SSE format even if stream=false
-                            // We read as text first to handle both valid JSON and "forced stream" text
                             const rawText = await response.text();
-                            let content = '';
+                            const parsedResponse = apiAdapters.parseChatText(chatRequest.protocol, rawText);
+                            const content = parsedResponse.text || '';
+                            const reasoning = parsedResponse.reasoning || '';
+                            responseUsage = parsedResponse.usage || responseUsage;
 
-                            try {
-                                // 1. Try parsing as standard JSON
-                                const data = JSON.parse(rawText);
-                                const apiError = extractApiErrorMessage(data, response.status);
-                                if (apiError) throwApiError(apiError);
-                                responseUsage = getApiUsagePayload(data) || responseUsage;
+                            if (content) rawAssistantContentForLog += content;
+                            if (reasoning) nativeReasoningForLog += reasoning;
+                            isThinking.value = Boolean(reasoning && !content);
 
-                                const msg = data.choices?.[0]?.message || {};
-                                content = msg.content || '';
-                                const reasoning = extractNativeReasoning(msg) || extractNativeReasoning(data.choices?.[0]);
-                                if (content) rawAssistantContentForLog += content;
-                                if (reasoning) nativeReasoningForLog += reasoning;
-
-                                if (reasoning && !content) {
-                                    isThinking.value = true;
-                                } else {
-                                    isThinking.value = false;
-                                }
-
-                                if (content || reasoning) {
-                                    assistantMessage = ensureAssistantMessage(content, reasoning);
-                                    if (!continuingAssistantMessage) {
-                                        assistantMessage.isReasoningOpen = !(reasoning && content);
-                                        assistantMessage.isReasoningAutoCollapsed = !!(reasoning && content);
-                                    } else if (reasoning && content) {
-                                        collapseNativeReasoning(assistantMessage);
-                                    }
-                                }
-                            } catch (e) {
-                                if (e.isApiError) throw e;
-                                // 2. If JSON fails, try parsing as SSE text (data: {...})
-                                // This handles cases where API returns stream format even if stream=false
-                                console.log('Non-standard JSON response detected, attempting manual SSE parsing...');
-                                const lines = rawText.split('\n');
-                                let finalReasoning = '';
-                                for (const line of lines) {
-                                    const trimmedLine = line.trim();
-                                    if (trimmedLine.startsWith('data:')) {
-                                        const dataStr = trimmedLine.replace(/^data:\s*/, '');
-                                        if (dataStr === '[DONE]') continue;
-                                        try {
-                                            const chunk = JSON.parse(dataStr);
-                                            const apiError = extractApiErrorMessage(chunk, response.status);
-                                            if (apiError) throwApiError(apiError);
-                                            responseUsage = getApiUsagePayload(chunk) || responseUsage;
-
-                                            const choice = chunk.choices?.[0];
-                                            if (!choice) continue;
-
-                                            const delta = choice.delta || choice.message || {};
-                                            const chunkContent = delta.content || '';
-                                            const chunkReasoning = extractNativeReasoning(delta) || extractNativeReasoning(choice);
-
-                                            if (chunkContent) {
-                                                content += chunkContent;
-                                                rawAssistantContentForLog += chunkContent;
-                                            }
-                                            if (chunkReasoning) {
-                                                finalReasoning += chunkReasoning;
-                                                nativeReasoningForLog += chunkReasoning;
-                                            }
-                                        } catch (err) {
-                                            if (err.isApiError) throw err;
-                                            if (/error/i.test(dataStr)) throw new Error(formatApiErrorMessage(response.status, dataStr));
-                                            // Ignore invalid chunks
-                                        }
-                                    }
-                                }
-
-                                if (content || finalReasoning) {
-                                    assistantMessage = ensureAssistantMessage(content, finalReasoning);
-                                    if (!continuingAssistantMessage) {
-                                        assistantMessage.isReasoningOpen = !(finalReasoning && content);
-                                        assistantMessage.isReasoningAutoCollapsed = !!(finalReasoning && content);
-                                    } else if (finalReasoning && content) {
-                                        collapseNativeReasoning(assistantMessage);
-                                    }
-
+                            if (content || reasoning) {
+                                assistantMessage = ensureAssistantMessage(content, reasoning);
+                                if (!continuingAssistantMessage) {
+                                    assistantMessage.isReasoningOpen = !(reasoning && content);
+                                    assistantMessage.isReasoningAutoCollapsed = !!(reasoning && content);
+                                } else if (reasoning && content) {
+                                    collapseNativeReasoning(assistantMessage);
                                 }
                             }
                         }
+
 
                         recordApiUsage(responseUsage, {
                             type: activeToolDepth > 0 ? 'tool_continuation' : 'chat',
@@ -6630,14 +6727,6 @@ ${content}
             const model = String(memorySettings.classicModel || '').trim();
             const providerId = memorySettings.classicProviderId || settings.apiProviderId;
             const providerConfig = getProviderApiConfig(providerId);
-            let apiUrl = providerConfig.apiUrl;
-            let apiKey = providerConfig.apiKey;
-            if (!memorySettings.classicProviderId) {
-                apiUrl = normalizeApiProviderUrl(settings.classicApiUrl || apiUrl);
-                apiKey = String(settings.classicApiKey || apiKey).trim();
-            }
-
-            if (!apiUrl || !apiKey) throw new Error('请先配置 API 地址和 Key');
             if (!model) throw new Error('请先选择总结模式副模型');
 
             const requestMessages = [{
@@ -6673,34 +6762,31 @@ ${content}
                 content: `上方内容是待整理资料。请只总结标记为“最新对话：唯一总结目标｜第 ${job.turn} 轮”的最后一组；逐项核对有效事实与变化，压缩重复表达，只输出总结正文。`
             });
 
-            const classicUrl = getOpenAICompatUrlForBase(apiUrl, 'chat/completions');
-            const response = await fetch(classicUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey}`
-                },
-                body: JSON.stringify({
-                    model,
-                    temperature: 0.2,
-                    stream: false,
-                    messages: requestMessages
-                }),
-                signal
+            const classicRequest = apiAdapters.buildChatRequest({
+                protocol: providerConfig.chatProtocol,
+                baseUrl: providerConfig.apiUrl,
+                apiKey: providerConfig.apiKey,
+                model,
+                temperature: 0.2,
+                stream: false,
+                messages: requestMessages,
+                signal,
             });
+            const response = await fetch(classicRequest.url, classicRequest.init);
             const rawText = await response.text();
             if (!response.ok) {
                 let payload = null;
                 try { payload = JSON.parse(rawText); } catch (_) { }
                 throw new Error(extractApiErrorMessage(payload, response.status) || `API Error: ${response.status}`);
             }
-            const summary = getClassicSummaryResponseContent(rawText)
+            const parsedSummary = apiAdapters.parseChatText(classicRequest.protocol, rawText);
+            const summary = String(parsedSummary.text || '')
                 .replace(/^```(?:text|markdown)?\s*/i, '')
                 .replace(/\s*```$/, '')
                 .replace(/^(?:最新对话总结|总结)[:：]\s*/i, '')
                 .trim();
             if (!summary) throw new Error('副模型没有返回有效总结');
-            recordApiUsage(extractApiUsageFromText(rawText), {
+            recordApiUsage(parsedSummary.usage, {
                 type: 'summary',
                 model,
                 detail: `第 ${job.turn} 轮`
@@ -6913,44 +6999,28 @@ ${content}
             const model = getMemoryEmbeddingModel();
             const providerId = memorySettings.embeddingProviderId || settings.apiProviderId;
             const providerConfig = getProviderApiConfig(providerId);
-            let apiUrl = providerConfig.apiUrl;
-            let apiKey = providerConfig.apiKey;
-            if (!memorySettings.embeddingProviderId) {
-                apiUrl = normalizeApiProviderUrl(settings.embeddingApiUrl || apiUrl);
-                apiKey = String(settings.embeddingApiKey || apiKey).trim();
+            if (providerConfig.embeddingProtocol !== EMBEDDING_PROTOCOL_OPENAI) {
+                throw new Error(`供应商“${providerConfig.provider.name}”未启用向量能力`);
             }
-
-            if (!apiUrl || !apiKey) throw new Error('请先配置 API 地址和 Key');
             if (!model) throw new Error('请先选择向量嵌入模型');
 
-            const normalizedInputs = inputs.map(input => String(input || '').trim());
-            if (normalizedInputs.some(input => !input)) throw new Error('嵌入内容不能为空');
-
-            const embeddingUrl = getOpenAICompatUrlForBase(apiUrl, 'embeddings');
-            const response = await fetch(embeddingUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey}`
-                },
-                body: JSON.stringify({
-                    model,
-                    input: normalizedInputs.length === 1 ? normalizedInputs[0] : normalizedInputs
-                }),
-                signal
+            const embeddingRequest = apiAdapters.buildEmbeddingRequest({
+                baseUrl: providerConfig.apiUrl,
+                apiKey: providerConfig.apiKey,
+                model,
+                inputs,
+                signal,
             });
-
+            const response = await fetch(embeddingRequest.url, embeddingRequest.init);
+            const rawText = await response.text();
+            let data = null;
+            try { data = JSON.parse(rawText); } catch (_) { }
             if (!response.ok) {
-                let errorPayload = null;
-                try { errorPayload = await response.json(); } catch (_) { }
-                const apiError = extractApiErrorMessage(errorPayload, response.status);
-                throw new Error(apiError || `Embedding API Error: ${response.status}`);
+                throw new Error(extractApiErrorMessage(data, response.status) || `Embedding API Error: ${response.status}`);
             }
-
-            const data = await response.json();
-            const rows = Array.isArray(data.data) ? [...data.data] : [];
-            rows.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-            const vectors = rows.map(row => normalizeEmbedding(row.embedding));
+            const parsedEmbedding = apiAdapters.parseEmbeddingResponse(data, embeddingRequest.expectedCount);
+            const normalizedInputs = Array.isArray(inputs) ? inputs : [inputs];
+            const vectors = parsedEmbedding.vectors.map(vector => normalizeEmbedding(vector));
 
             if (signal?.aborted) {
                 const abortError = new Error('Aborted');
@@ -6961,7 +7031,7 @@ ${content}
                 throw new Error('嵌入接口返回的数据不完整');
             }
 
-            recordApiUsage(getApiUsagePayload(data), {
+            recordApiUsage(parsedEmbedding.usage, {
                 type: 'embedding',
                 model,
                 detail: `${normalizedInputs.length} 条输入`
@@ -11011,7 +11081,7 @@ ${memoryFragmentSection}
         return {
             switchProfile, createNewProfile, deleteProfile, userProfiles, activeProfileId, showProfileDropdown,
             processMainContent,
-            currentView, showDescriptionPanel, showModelSelector, modelSelectionTarget, openModelSelector, showChatModelSelector, showCharacterEditor, showAddCharacterMenu, showPresetEditor, showUiTemplateEditor,
+            currentView, showDescriptionPanel, showModelSelector, modelSelectionTarget, openModelSelector, manualModelProviderId, manualModelId, modelSelectorProviderOptions, selectManualModel, showChatModelSelector, showCharacterEditor, showAddCharacterMenu, showPresetEditor, showUiTemplateEditor,
             showActiveToolEditor,
             showExportModal, sysInstruction, showInstructionPanel, exportItems, selectedExportIndices, // Export Modal
             showContextViewerModal, lastContextMessages, lastTriggeredWorldInfos, lastContextTotalLength, // Context Viewer
@@ -11023,7 +11093,7 @@ ${memoryFragmentSection}
             showUpdateModal, updateCountdown, latestUpdate, closeUpdateModal, isUpdateScrolledToBottom, checkUpdateScroll, // Update Modal
             showConfirmModal, confirmMessage, modelMode, showNoMemoryNeededModal, // Export for template
             isGenerating, isRemoteGenerating, remoteEstimatedTime, isReceiving, isThinking, hasActiveToolInlineWork, isConversationBusy, activeToolContinuationMessageId, activeToolContinuationHasResponse, userInput, modelSearchQuery, activeModelTag, modelTags, characterSearchQuery, filteredModels, filteredCharacters,
-            user, settings, apiProviderOptions, selectedApiProvider, isCustomApiProvider, customApiProviderOptions, showApiProviderSelector, selectApiProvider, addCustomApiProvider, updateSelectedCustomApiProvider, deleteCustomApiProvider, getProviderDisplayName, characters, currentCharacter, currentCharacterIndex, chatHistory, displayedChatMessages, handleChatScroll, presets, presetRoleOptions, fontFamilyOptions, imageStyleOptions, imageSizeOptions, imageGenCountOptions, scopeOptions, uiTemplatePlacementOptions, worldInfoPositionOptions, getPresetRoleLabel, getPresetRoleDisplayLabel, getPresetRoleBadgeClass, regexScripts, worldInfo,
+            user, settings, apiProviderOptions, selectedApiProvider, selectedProviderModes, chatProtocolOptions, embeddingProtocolOptions, isCustomApiProvider, customApiProviderOptions, showApiProviderSelector, selectApiProvider, addCustomApiProvider, updateSelectedCustomApiProvider, updateSelectedProviderMode, deleteCustomApiProvider, getProviderDisplayName, migrateLegacyMemoryProviders, characters, currentCharacter, currentCharacterIndex, chatHistory, displayedChatMessages, handleChatScroll, presets, presetRoleOptions, fontFamilyOptions, imageStyleOptions, imageSizeOptions, imageGenCountOptions, scopeOptions, uiTemplatePlacementOptions, worldInfoPositionOptions, getPresetRoleLabel, getPresetRoleDisplayLabel, getPresetRoleBadgeClass, regexScripts, worldInfo,
             activeTools, activeToolAggressivenessOptions: ACTIVE_TOOL_AGGRESSIVENESS_OPTIONS, editingActiveTool, normalizeActiveTools, isWebActiveTool, getActiveToolDisplayDescription, getActiveToolResultCountMin, getActiveToolResultCountMax,
             getToolCallModeText, hasThinkingOrTools, isMessageThinkingOrRunning, isThinkingSummaryOpen, toggleThinkingSummary, markThinkingSummaryDetailOpened, getTimelineSteps,
             chatRoundStats, conversationBodyLength, summaryCompressedBodyLength,

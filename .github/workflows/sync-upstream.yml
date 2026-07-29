@@ -69,16 +69,23 @@ jobs:
 
           download https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-plazaId-patch.js /tmp/reapply-plazaId-patch.js
           download https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-multi-provider-patch.js /tmp/reapply-multi-provider-patch.js
+          download https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/rphub-api-adapters.js /tmp/rphub-api-adapters.js
 
           node /tmp/reapply-plazaId-patch.js assets/js/app.js
           node /tmp/reapply-multi-provider-patch.js .
 
           node --check assets/js/app.js
+          node --check assets/js/rphub-api-adapters.js
           git -c core.whitespace=cr-at-eol diff --check
           grep -q "RPHUB_PLAZA_CARD" assets/js/app.js
           grep -q "const selectModel = (modelId, providerId)" assets/js/app.js
-          grep -q "getApiConfigForModel" assets/js/app.js
+          grep -q "dynamic API provider registry v3" assets/js/app.js
+          grep -q "apiAdapters.buildChatRequest" assets/js/app.js
+          grep -q "apiAdapters.buildEmbeddingRequest" assets/js/app.js
+          grep -q "CHAT_PROTOCOL_OPENAI_RESPONSES" assets/js/rphub-api-adapters.js
           grep -q "selectModel(model.id, model.providerId)" index.html
+          grep -q "assets/js/rphub-api-adapters.js" index.html
+          node -e "const fs=require('fs');const html=fs.readFileSync('index.html','utf8');if(html.indexOf('rphub-api-adapters.js')>html.indexOf('assets/js/app.js'))process.exit(1)"
 
       - name: Commit reconciled result
         id: commit
