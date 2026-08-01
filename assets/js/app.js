@@ -35,7 +35,8 @@ const EmbeddedViewContent = {
     props: {
         src: String,
         loading: Boolean,
-        loadingText: String
+        loadingText: String,
+        frameId: String
     },
     emits: ['load', 'menu'],
     template: `
@@ -57,7 +58,7 @@ const EmbeddedViewContent = {
                     <div class="text-gray-500 font-medium">{{ loadingText }}</div>
                 </div>
             </div>
-            <iframe :src="src" @load="$emit('load')" class="absolute inset-0 w-full h-full border-0"
+            <iframe :id="frameId" :src="src" @load="$emit('load')" class="absolute inset-0 w-full h-full border-0"
                 allow="clipboard-write"
                 sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads"></iframe>
         </div>`
@@ -115,15 +116,23 @@ createApp({
     },
     setup() {
         // ============================================================
-        // RP-Hub-Sync 最小补丁：接收广场 iframe 发来的 plaza cardId
+        // RP-Hub-Sync 最小补丁：安全接收广场 iframe 发来的 plaza cardId
         // ============================================================
         window.__rphub_pending_plaza_card__ = null;
         window.addEventListener('message', (event) => {
+            const plazaFrame = document.getElementById('rphub-square-frame');
+            if (!plazaFrame || event.source !== plazaFrame.contentWindow) return;
             if (event.origin !== 'https://rphforum.zeabur.app') return;
-            if (event.data && event.data.type === 'RPHUB_PLAZA_CARD') {
-                window.__rphub_pending_plaza_card__ = event.data;
-                console.log('[RP-Hub Sync] pending plaza card:', event.data.cardId, event.data.name);
-            }
+            const data = event.data;
+            if (!data || data.type !== 'RPHUB_PLAZA_CARD'
+                || typeof data.cardId !== 'string' || !data.cardId.trim()) return;
+            window.__rphub_pending_plaza_card__ = {
+                type: 'RPHUB_PLAZA_CARD',
+                cardId: data.cardId.trim(),
+                name: typeof data.name === 'string' ? data.name.trim() : '',
+                updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : null
+            };
+            console.log('[RP-Hub Sync] pending plaza card:', data.cardId, data.name);
         });
         // ============================================================
         const cardUtils = window.RPHubCardUtils;
@@ -1037,23 +1046,81 @@ createApp({
                 provider.id === providerId ? { ...provider, apiUrl: newUrl || '' } : provider
             ));
         });
+        // RP-Hub-Sync secure workshop settings bridge v1
+        const getEmbeddedFrameOrigin = (frame) => {
+            if (!frame) return location.origin;
+            try {
+                return new URL(frame.getAttribute('src') || frame.src, location.href).origin;
+            } catch (_) {
+                return location.origin;
+            }
+        };
+        const getWorkshopFrame = () => document.getElementById('rphub-character-frame');
+        const buildWorkshopModelBinding = (modelKey, providerKey) => {
+            const model = String(settings[modelKey] || '').trim();
+            const fallbackProviderId = settings[providerKey] || settings.apiProviderId;
+            if (!model) {
+                return {
+                    model: '',
+                    providerId: fallbackProviderId || '',
+                    providerName: '',
+                    apiUrl: '',
+                    apiKey: '',
+                    chatProtocol: '',
+                };
+            }
+            try {
+                const config = getProviderApiConfig(fallbackProviderId, { allowIncomplete: true });
+                return {
+                    model,
+                    providerId: config.providerId,
+                    providerName: config.provider.name || '',
+                    apiUrl: config.apiUrl,
+                    apiKey: config.apiKey,
+                    chatProtocol: config.chatProtocol,
+                };
+            } catch (error) {
+                console.warn('[RP-Hub] Workshop provider binding unavailable:', error);
+                return {
+                    model,
+                    providerId: fallbackProviderId || '',
+                    providerName: '',
+                    apiUrl: '',
+                    apiKey: '',
+                    chatProtocol: '',
+                };
+            }
+        };
         const syncSettingsToGenerator = () => {
-            const iframe = document.querySelector('iframe[src*="character"]');
-            if (iframe && iframe.contentWindow) {
-                try {
-                    const syncData = {
-                        type: 'SYNC_SETTINGS',
-                        settings: JSON.parse(JSON.stringify(settings))
-                    };
-                    iframe.contentWindow.postMessage(syncData, '*');
-                } catch (e) {
-                    console.error('Settings sync failed:', e);
-                }
+            const iframe = getWorkshopFrame();
+            if (!iframe || !iframe.contentWindow) return;
+            try {
+                const syncData = {
+                    type: 'SYNC_SETTINGS',
+                    version: 2,
+                    settings: {
+                        fontFamily: settings.fontFamily,
+                        imageGenKey: settings.imageGenKey,
+                        imageStyle: settings.imageStyle,
+                        currentModel: buildWorkshopModelBinding('model', 'modelProviderId'),
+                        presets: {
+                            quality: buildWorkshopModelBinding('qualityModel', 'qualityModelProviderId'),
+                            balanced: buildWorkshopModelBinding('balancedModel', 'balancedModelProviderId'),
+                            fast: buildWorkshopModelBinding('fastModel', 'fastModelProviderId'),
+                        },
+                    },
+                };
+                iframe.contentWindow.postMessage(syncData, getEmbeddedFrameOrigin(iframe));
+            } catch (error) {
+                console.error('Settings sync failed:', error);
             }
         };
 
-        // Listen for workshop ready message to trigger sync
+        // Listen only to the currently mounted character workshop iframe.
         window.addEventListener('message', (event) => {
+            const iframe = getWorkshopFrame();
+            if (!iframe || event.source !== iframe.contentWindow) return;
+            if (event.origin !== getEmbeddedFrameOrigin(iframe)) return;
             if (event.data && event.data.type === 'WORKSHOP_READY') {
                 syncSettingsToGenerator();
             }
@@ -1080,6 +1147,7 @@ createApp({
             settings.modelProviderId,
             settings.customApiProviders,
             settings.apiProviderKeys,
+            settings.apiProviderModes,
         ], () => {
             syncSettingsToGenerator();
         }, { deep: true });
@@ -6616,9 +6684,9 @@ ${content}
                                     const trimmedLine = line.trim();
                                     if (!trimmedLine) continue;
 
-                                    if (trimmedLine.startsWith('data: ')) {
-                                        const dataStr = trimmedLine.slice(6);
-                                        if (dataStr === '[DONE]') continue;
+                                    if (trimmedLine.startsWith('data:')) {
+                                        const dataStr = apiAdapters.parseSseDataLine(trimmedLine);
+                                        if (dataStr === null || dataStr === '[DONE]') continue;
 
                                         try {
                                             const payload = dataStr === '[DONE]' ? dataStr : JSON.parse(dataStr);

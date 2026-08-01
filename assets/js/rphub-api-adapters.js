@@ -219,12 +219,17 @@
         throw new Error(`不支持的聊天调用方式：${protocol}`);
     };
 
+    const parseSseDataLine = (line) => {
+        const trimmed = String(line || '').trim();
+        if (!trimmed.startsWith('data:')) return null;
+        return trimmed.replace(/^data:\s*/, '');
+    };
+
     const parseSseText = (protocol, rawText) => {
         const result = { text: '', reasoning: '', usage: null };
         String(rawText || '').split(/\r?\n/).forEach(line => {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data:')) return;
-            const dataText = trimmed.replace(/^data:\s*/, '');
+            const dataText = parseSseDataLine(line);
+            if (dataText === null) return;
             if (!dataText) return;
             let payload = dataText;
             if (dataText !== '[DONE]') {
@@ -314,6 +319,7 @@
         parseChatResponse,
         parseChatStreamEvent,
         parseChatText,
+        parseSseDataLine,
         buildModelListRequest,
         parseModelList,
         buildEmbeddingRequest,

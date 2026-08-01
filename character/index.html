@@ -15,6 +15,8 @@
     <script src="https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js"></script>
     <script src="../assets/js/card-utils.js"></script>
     <script src="../assets/js/ui-select.js"></script>
+    <!-- RP-Hub-Sync API adapter runtime -->
+    <script src="../assets/js/rphub-api-adapters.js"></script>
     <style>
         :root {
             --app-visual-height: 100vh;
@@ -1721,20 +1723,37 @@
                 // Active Model Type
                 const activeModelType = ref('balanced'); // 'quality', 'balanced', 'fast'
 
+                // RP-Hub-Sync provider-aware workshop model routing v2
+                const applyWorkshopModelConfig = (modelConfig) => {
+                    const config = modelConfig || {};
+                    api.url = String(config.apiUrl || '').trim();
+                    api.key = String(config.apiKey || '').trim();
+                    api.model = String(config.model || '').trim();
+                    api.providerId = String(config.providerId || '').trim();
+                    api.providerName = String(config.providerName || '').trim();
+                    api.chatProtocol = String(config.chatProtocol || apiAdapters.CHAT_PROTOCOL_OPENAI_CHAT).trim();
+                    return Boolean(api.url && api.key && api.model && api.providerId && api.chatProtocol);
+                };
+
                 const setActiveModel = (type) => {
                     activeModelType.value = type;
-                    api.model = options.customModels[type];
+                    applyWorkshopModelConfig(api.modelConfigs?.[type]);
                     api.stream = true;
-                    // Force inform sync if needed (though watch handles it)
                 };
 
                 const getActiveModelTypeFromMainSettings = (mainSettings) => {
-                    const selectedModel = String(mainSettings?.model || '');
-                    if (!selectedModel) return null;
-                    if (selectedModel === mainSettings.fastModel) return 'fast';
-                    if (selectedModel === mainSettings.balancedModel) return 'balanced';
-                    if (selectedModel === mainSettings.qualityModel) return 'quality';
-                    return null;
+                    const current = mainSettings?.currentModel || {};
+                    const selectedModel = String(current.model || '').trim();
+                    const selectedProviderId = String(current.providerId || '').trim();
+                    if (!selectedModel) return 'current';
+                    for (const type of ['fast', 'balanced', 'quality']) {
+                        const preset = mainSettings?.presets?.[type] || {};
+                        if (selectedModel === String(preset.model || '').trim()
+                            && selectedProviderId === String(preset.providerId || '').trim()) {
+                            return type;
+                        }
+                    }
+                    return 'current';
                 };
 
                 const fontFamilyCssMap = {
@@ -1750,51 +1769,58 @@
                 applyFontFamily('modern');
                 const IMAGE_GEN_BASE_URL = 'https://nai.sta1n.cn';
 
+                // RP-Hub-Sync secure workshop settings bridge v2
+
                 // Main Settings Sync Listener
+                const normalizeWorkshopModelBinding = (binding = {}) => ({
+                    model: String(binding.model || '').trim(),
+                    providerId: String(binding.providerId || '').trim(),
+                    providerName: String(binding.providerName || '').trim(),
+                    apiUrl: String(binding.apiUrl || '').trim(),
+                    apiKey: String(binding.apiKey || '').trim(),
+                    chatProtocol: String(binding.chatProtocol || apiAdapters.CHAT_PROTOCOL_OPENAI_CHAT).trim(),
+                });
+
                 const setupSyncListener = () => {
                     window.addEventListener('message', (event) => {
-                        const { type, settings: mainSettings } = event.data;
-                        if (type === 'SYNC_SETTINGS' && mainSettings) {
-                            console.log('%c[Settings Sync Received]', 'color: #10b981; font-weight: bold;');
+                        if (!window.parent || event.source !== window.parent || event.origin !== location.origin) return;
+                        const payload = event.data;
+                        if (!payload || payload.type !== 'SYNC_SETTINGS' || Number(payload.version) < 2) return;
+                        const mainSettings = payload.settings;
+                        if (!mainSettings || typeof mainSettings !== 'object') return;
 
-                            applyFontFamily(mainSettings.fontFamily);
+                        console.log('%c[Settings Sync Received]', 'color: #10b981; font-weight: bold;');
+                        applyFontFamily(mainSettings.fontFamily);
+                        options.imageGenKey = mainSettings.imageGenKey || '';
 
-                            // Sync API
-                            api.url = mainSettings.apiUrl || '';
-                            api.key = mainSettings.apiKey || '';
-
-                            // Sync Image Gen
-                            // Always sync key even if empty to ensure reset
-                            options.imageGenKey = mainSettings.imageGenKey;
-
-                            // Map imageStyle to avatarStyle (vertical -> default, r18 -> hentai)
-                            if (mainSettings.imageStyle === 'r18') {
-                                options.avatarStyle = 'hentai';
-                            } else if (mainSettings.imageStyle === 'vertical') {
-                                options.avatarStyle = 'default';
-                            } else if (mainSettings.imageStyle === 'lolita25d') {
-                                options.avatarStyle = 'lolita25d';
-                            }
-
-                            // Sync Models
-                            options.customModels.quality = mainSettings.qualityModel || '';
-                            options.customModels.balanced = mainSettings.balancedModel || '';
-                            options.customModels.fast = mainSettings.fastModel || '';
-                            const syncedModelType = getActiveModelTypeFromMainSettings(mainSettings);
-                            if (syncedModelType) activeModelType.value = syncedModelType;
-
-                            // Update current active api.model
-                            api.model = options.customModels[activeModelType.value] || mainSettings.model || '';
+                        if (mainSettings.imageStyle === 'r18') {
+                            options.avatarStyle = 'hentai';
+                        } else if (mainSettings.imageStyle === 'vertical') {
+                            options.avatarStyle = 'default';
+                        } else if (mainSettings.imageStyle === 'lolita25d') {
+                            options.avatarStyle = 'lolita25d';
                         }
+
+                        const presets = mainSettings.presets || {};
+                        options.customModels.quality = String(presets.quality?.model || '').trim();
+                        options.customModels.balanced = String(presets.balanced?.model || '').trim();
+                        options.customModels.fast = String(presets.fast?.model || '').trim();
+                        api.modelConfigs = {
+                            current: normalizeWorkshopModelBinding(mainSettings.currentModel),
+                            quality: normalizeWorkshopModelBinding(presets.quality),
+                            balanced: normalizeWorkshopModelBinding(presets.balanced),
+                            fast: normalizeWorkshopModelBinding(presets.fast),
+                        };
+                        const syncedModelType = getActiveModelTypeFromMainSettings(mainSettings);
+                        activeModelType.value = syncedModelType;
+                        applyWorkshopModelConfig(api.modelConfigs[syncedModelType]);
                     });
 
-                    // Inform parent that workshop is ready to receive sync
                     if (window.parent && window.parent !== window) {
-                        window.parent.postMessage({ type: 'WORKSHOP_READY' }, '*');
+                        window.parent.postMessage({ type: 'WORKSHOP_READY', version: 2 }, location.origin);
                     }
                 };
 
-                // Call sync setup
                 setupSyncListener();
 
                 // Options with persistence
@@ -1828,31 +1854,42 @@
                 }, { deep: true });
 
                 localStorage.removeItem('ai_chargen_api');
+                const apiAdapters = window.RPHubApiAdapters;
                 const api = reactive({
                     url: '',
                     key: '',
                     model: '',
+                    providerId: '',
+                    providerName: '',
+                    chatProtocol: 'openai-chat-completions',
+                    modelConfigs: {},
                     stream: true
                 });
-                const getApiBaseUrl = () => {
-                    const baseUrl = api.url.replace(/\/+$/, '');
-                    return baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`;
-                };
                 const requestWorkshopCompletion = (messages, { stream, temperature }) => {
-                    if (!String(api.url || '').trim()) throw new Error('请先填写当前 API 预设的地址');
-                    if (!String(api.key || '').trim()) throw new Error('请先填写当前 API 预设的 Key');
+                    if (!apiAdapters || typeof apiAdapters.buildChatRequest !== 'function') {
+                        throw new Error('API 协议适配器未加载');
+                    }
+                    if (!String(api.url || '').trim()) throw new Error('请先配置当前模型供应商的 API 地址');
+                    if (!String(api.key || '').trim()) throw new Error('请先配置当前模型供应商的 API Key');
                     if (!String(api.model || '').trim()) throw new Error('请先在主界面选择模型');
-                    const apiUrl = getApiBaseUrl();
-                    console.log('%c[Workshop AI Request]', 'color: #3b82f6; font-weight: bold;', { url: apiUrl, model: api.model });
-                    return fetch(`${apiUrl}/chat/completions`, {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${api.key}`
-                        },
-                        body: JSON.stringify({ model: api.model, messages, stream, temperature }),
+                    if (!String(api.providerId || '').trim()) throw new Error('当前模型缺少供应商绑定');
+                    const request = apiAdapters.buildChatRequest({
+                        protocol: api.chatProtocol,
+                        baseUrl: api.url,
+                        apiKey: api.key,
+                        model: api.model,
+                        messages,
+                        stream,
+                        temperature,
                         signal: abortController.value.signal
                     });
+                    console.log('%c[Workshop AI Request]', 'color: #3b82f6; font-weight: bold;', {
+                        url: request.url,
+                        model: api.model,
+                        providerId: api.providerId,
+                        protocol: api.chatProtocol
+                    });
+                    return fetch(request.url, request.init);
                 };
 
                 const targetFields = ['name', 'description', 'personality', 'first_mes', 'creator_notes', 'system_prompt', 'post_history_instructions'];
@@ -2522,51 +2559,54 @@
                 };
 
                 const readWorkshopStream = async (response, onContent) => {
+                    if (!apiAdapters || typeof apiAdapters.parseSseDataLine !== 'function'
+                        || typeof apiAdapters.parseChatStreamEvent !== 'function') {
+                        throw new Error('API 流式协议适配器未加载');
+                    }
                     const reader = response.body.getReader();
                     const decoder = new TextDecoder();
                     let rawContent = '';
                     let reasoning = '';
                     let sseBuffer = '';
                     let receivedContent = false;
+                    const processLine = (line) => {
+                        const data = apiAdapters.parseSseDataLine(line);
+                        if (data === null || data === '' || data === '[DONE]') return false;
+                        const payload = JSON.parse(data);
+                        const streamEvent = apiAdapters.parseChatStreamEvent(api.chatProtocol, payload);
+                        if (streamEvent.error) throw new Error(streamEvent.error);
+                        if (streamEvent.reasoningDelta) {
+                            reasoning += streamEvent.reasoningDelta;
+                            if (!receivedContent) generationStatus.value = '正在思考...';
+                        }
+                        if (streamEvent.textDelta) {
+                            rawContent += streamEvent.textDelta;
+                            if (hasInlineThinking(rawContent) && !receivedContent) {
+                                generationStatus.value = '正在思考...';
+                            }
+                            const visibleContent = stripInlineThinking(rawContent);
+                            if (hasInlineThinking(rawContent) && !visibleContent.trim()) {
+                                generationStatus.value = '正在思考...';
+                            } else if (visibleContent) {
+                                receivedContent = true;
+                                onContent(visibleContent);
+                            }
+                        }
+                        return streamEvent.done;
+                    };
 
                     while (true) {
                         const { done, value } = await reader.read();
                         if (done) break;
-
                         sseBuffer += decoder.decode(value, { stream: true });
                         const lines = sseBuffer.split('\n');
                         sseBuffer = lines.pop() || '';
                         for (const line of lines) {
-                            const data = line.trim().replace(/^data:\s*/, '');
-                            if (!line.trim().startsWith('data:') || data === '[DONE]') continue;
-                            try {
-                                const json = JSON.parse(data);
-                                const choice = json.choices?.[0];
-                                const delta = choice?.delta || choice?.message || {};
-                                const reasoningDelta = extractNativeReasoning(delta) || extractNativeReasoning(choice);
-                                if (reasoningDelta) {
-                                    reasoning += reasoningDelta;
-                                    if (!receivedContent) generationStatus.value = '正在思考...';
-                                }
-
-                                const content = delta.content || '';
-                                if (!content) continue;
-                                rawContent += content;
-                                if (hasInlineThinking(rawContent) && !receivedContent) {
-                                    generationStatus.value = '正在思考...';
-                                }
-                                const visibleContent = stripInlineThinking(rawContent);
-                                if (hasInlineThinking(rawContent) && !visibleContent.trim()) {
-                                    generationStatus.value = '正在思考...';
-                                    continue;
-                                }
-                                if (!visibleContent) continue;
-                                receivedContent = true;
-                                onContent(visibleContent);
-                            } catch (_) { }
+                            if (processLine(line)) return { rawContent, reasoning };
                         }
                     }
-
+                    sseBuffer += decoder.decode();
+                    if (sseBuffer.trim()) processLine(sseBuffer);
                     return { rawContent, reasoning };
                 };
 
@@ -3703,10 +3743,10 @@ JSON 字段（世界书/正则脚本）必须输出为合法的 JSON 数组，**
                                 fullContent = buffer;
                                 console.log('%c[AI Full Response]', 'color: #3b82f6; font-weight: bold;', formatAIResponseForConsole(streamResult.rawContent || fullContent, streamResult.reasoning));
                             } else {
-                                const data = await response.json();
-                                const message = data.choices?.[0]?.message || {};
-                                const reasoning = extractNativeReasoning(message);
-                                const rawContent = message.content || '';
+                                const rawText = await response.text();
+                                const parsedResponse = apiAdapters.parseChatText(api.chatProtocol, rawText);
+                                const reasoning = parsedResponse.reasoning || '';
+                                const rawContent = parsedResponse.text || '';
                                 if (reasoning || hasInlineThinking(rawContent)) generationStatus.value = '正在思考...';
                                 const content = stripInlineThinking(rawContent);
                                 parseBuffer(content);

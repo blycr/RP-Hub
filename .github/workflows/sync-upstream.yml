@@ -31,46 +31,84 @@ jobs:
 
       - name: Configure Git
         run: |
+          set -Eeuo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Fetch and merge upstream
         run: |
-          set -e
-          git remote add upstream https://github.com/STA1N156/RP-Hub.git
+          set -Eeuo pipefail
+          upstream_url="https://github.com/STA1N156/RP-Hub.git"
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream "$upstream_url"
+          else
+            git remote add upstream "$upstream_url"
+          fi
           git fetch upstream main
 
-          mkdir -p /tmp/rphub-backup
-          cp favicon.svg /tmp/rphub-backup/ 2>/dev/null || true
-          cp .gitignore /tmp/rphub-backup/ 2>/dev/null || true
-          cp CNAME /tmp/rphub-backup/ 2>/dev/null || true
+          backup_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$backup_dir"' EXIT
+          present_manifest="$backup_dir/present"
+          absent_manifest="$backup_dir/absent"
+          : > "$present_manifest"
+          : > "$absent_manifest"
+          for protected in favicon.svg .gitignore CNAME; do
+            if [ -e "$protected" ]; then
+              cp -a -- "$protected" "$backup_dir/$protected"
+              printf '%s\n' "$protected" >> "$present_manifest"
+            else
+              printf '%s\n' "$protected" >> "$absent_manifest"
+            fi
+          done
 
-          # A real conflict must stop the job. Never commit an unresolved merge.
-          git merge upstream/main -m "Sync upstream $(date -u +%Y-%m-%d)" -X theirs
+          if ! git merge --no-commit --no-ff upstream/main -m "Sync upstream $(date -u +%Y-%m-%d)"; then
+            git diff --name-only --diff-filter=U
+            git merge --abort
+            exit 1
+          fi
 
-          cp /tmp/rphub-backup/favicon.svg . 2>/dev/null || true
-          cp /tmp/rphub-backup/.gitignore . 2>/dev/null || true
-          cp /tmp/rphub-backup/CNAME . 2>/dev/null || true
+          while IFS= read -r protected; do
+            [ -n "$protected" ] || continue
+            cp -a -- "$backup_dir/$protected" "$protected"
+          done < "$present_manifest"
+          while IFS= read -r protected; do
+            [ -n "$protected" ] || continue
+            rm -f -- "$protected"
+          done < "$absent_manifest"
 
       - name: Download and reconcile local patches
         env:
           SYNC_REPO_PAT: ${{ secrets.SYNC_REPO_PAT }}
         run: |
-          set -e
-          AUTH=()
-          if [ -n "$SYNC_REPO_PAT" ]; then AUTH=(-H "Authorization: Bearer $SYNC_REPO_PAT"); fi
+          set -Eeuo pipefail
+          if [ -z "$SYNC_REPO_PAT" ]; then
+            echo "::error::SYNC_REPO_PAT is required to read RP-Hub-Sync."
+            exit 1
+          fi
+          auth=(-H "Authorization: Bearer $SYNC_REPO_PAT")
+          sync_sha="$(curl --fail --silent --show-error --location "${auth[@]}" \
+            -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/blycr/RP-Hub-Sync/commits/main \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const sha=JSON.parse(s).sha;if(!/^[0-9a-f]{40}$/.test(sha))throw new Error('invalid SHA');process.stdout.write(sha)}catch(e){console.error(e.message);process.exit(1)}})")"
+          if ! [[ "$sync_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Could not resolve a full RP-Hub-Sync commit SHA."
+            exit 1
+          fi
+          sync_raw_base="https://raw.githubusercontent.com/blycr/RP-Hub-Sync/$sync_sha"
 
           download() {
-            if ! curl -sfL "${AUTH[@]}" "$1" -o "$2"; then
-              echo "::error::Failed to download $1. Configure SYNC_REPO_PAT with read access to the private RP-Hub-Sync repository."
-              exit 1
-            fi
+            local url="$1"
+            local target="$2"
+            curl --fail --silent --show-error --location "${auth[@]}" "$url" -o "$target"
           }
 
-          download https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-plazaId-patch.js /tmp/reapply-plazaId-patch.js
-          download https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/reapply-multi-provider-patch.js /tmp/reapply-multi-provider-patch.js
-          download https://raw.githubusercontent.com/blycr/RP-Hub-Sync/main/scripts/rphub-api-adapters.js /tmp/rphub-api-adapters.js
+          download "$sync_raw_base/scripts/reapply-plazaId-patch.js" /tmp/reapply-plazaId-patch.js
+          download "$sync_raw_base/scripts/reapply-multi-provider-patch.js" /tmp/reapply-multi-provider-patch.js
+          download "$sync_raw_base/scripts/rphub-api-adapters.js" /tmp/rphub-api-adapters.js
 
+          node --check /tmp/reapply-plazaId-patch.js
+          node --check /tmp/reapply-multi-provider-patch.js
+          node --check /tmp/rphub-api-adapters.js
           node /tmp/reapply-plazaId-patch.js assets/js/app.js
           node /tmp/reapply-multi-provider-patch.js .
 
@@ -78,19 +116,26 @@ jobs:
           node --check assets/js/rphub-api-adapters.js
           git -c core.whitespace=cr-at-eol diff --check
           grep -q "RPHUB_PLAZA_CARD" assets/js/app.js
+          grep -q "rphub-square-frame" index.html
+          grep -q "rphub-character-frame" index.html
           grep -q "const selectModel = (modelId, providerId)" assets/js/app.js
           grep -q "dynamic API provider registry v3" assets/js/app.js
           grep -q "apiAdapters.buildChatRequest" assets/js/app.js
           grep -q "apiAdapters.buildEmbeddingRequest" assets/js/app.js
+          grep -q "apiAdapters.parseSseDataLine" assets/js/app.js
           grep -q "CHAT_PROTOCOL_OPENAI_RESPONSES" assets/js/rphub-api-adapters.js
           grep -q "selectModel(model.id, model.providerId)" index.html
           grep -q "assets/js/rphub-api-adapters.js" index.html
-          node -e "const fs=require('fs');const html=fs.readFileSync('index.html','utf8');if(html.indexOf('rphub-api-adapters.js')>html.indexOf('assets/js/app.js'))process.exit(1)"
+          grep -q "secure workshop settings bridge" assets/js/app.js
+          grep -q "apiAdapters.buildChatRequest" character/index.html
+          grep -q "apiAdapters.parseChatStreamEvent" character/index.html
+          grep -q "event.source !== window.parent" character/index.html
+          node -e "const fs=require('fs');const html=fs.readFileSync('index.html','utf8');if(html.indexOf('rphub-api-adapters.js')>html.indexOf('assets/js/app.js'))process.exit(1);const char=fs.readFileSync('character/index.html','utf8');if(char.indexOf('../assets/js/rphub-api-adapters.js')>char.indexOf('<script>'))process.exit(1)"
 
       - name: Commit reconciled result
         id: commit
         run: |
-          set -e
+          set -Eeuo pipefail
           git add -A
           if ! git diff --cached --quiet; then
             git commit -m "chore: reconcile local patches"
