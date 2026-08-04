@@ -4837,7 +4837,8 @@ ${content}
         // API & Models
         const getOpenAICompatUrlForBase = (baseUrl, endpoint) => {
             const normalizedBase = String(baseUrl || '').replace(/\s+/g, '').replace(/\/+$/, '');
-            const versionedBase = normalizedBase.endsWith('/v1') ? normalizedBase : `${normalizedBase}/v1`;
+            const bareBase = normalizedBase.replace(/[?#].*$/, '').replace(/\/+$/, '');
+            const versionedBase = bareBase.endsWith('/v1') ? bareBase : `${bareBase}/v1`;
             return `${versionedBase}/${String(endpoint || '').replace(/^\/+/, '')}`;
         };
         const getApiEndpoint = (endpoint) => getOpenAICompatUrlForBase(settings.apiUrl, endpoint);

@@ -26,7 +26,8 @@
     const buildOpenAIUrl = (baseUrl, endpoint) => {
         const normalizedBase = normalizeBaseUrl(baseUrl);
         if (!normalizedBase) throw new Error('API 地址不能为空');
-        const versionedBase = normalizedBase.endsWith('/v1') ? normalizedBase : `${normalizedBase}/v1`;
+        const bareBase = normalizedBase.replace(/[?#].*$/, '').replace(/\/+$/, '');
+        const versionedBase = bareBase.endsWith('/v1') ? bareBase : `${bareBase}/v1`;
         return `${versionedBase}/${String(endpoint || '').replace(/^\/+/, '')}`;
     };
 
@@ -227,10 +228,11 @@
 
     const parseSseText = (protocol, rawText) => {
         const result = { text: '', reasoning: '', usage: null };
+        let sawDataLine = false;
         String(rawText || '').split(/\r?\n/).forEach(line => {
             const dataText = parseSseDataLine(line);
-            if (dataText === null) return;
-            if (!dataText) return;
+            if (dataText === null || !dataText) return;
+            sawDataLine = true;
             let payload = dataText;
             if (dataText !== '[DONE]') {
                 try {
@@ -245,6 +247,7 @@
             result.reasoning += event.reasoningDelta;
             result.usage = event.usage || result.usage;
         });
+        if (!sawDataLine) throw new Error('API 响应既不是 JSON 也不是 SSE，无法解析');
         return result;
     };
 
