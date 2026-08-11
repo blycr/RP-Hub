@@ -114,6 +114,7 @@ jobs:
 
           node --check assets/js/app.js
           node --check assets/js/rphub-api-adapters.js
+          if [ -f assets/js/ui-components.js ]; then node --check assets/js/ui-components.js; fi
           git -c core.whitespace=cr-at-eol diff --check
           grep -q "RPHUB_PLAZA_CARD" assets/js/app.js
           grep -q "rphub-square-frame" index.html
@@ -123,14 +124,34 @@ jobs:
           grep -q "apiAdapters.buildChatRequest" assets/js/app.js
           grep -q "apiAdapters.buildEmbeddingRequest" assets/js/app.js
           grep -q "apiAdapters.parseSseDataLine" assets/js/app.js
+          # Modular 1.8.1: main chat bypasses RPHubApiClient with inlined adapter transport.
+          grep -q "const chatRequest = apiAdapters.buildChatRequest" assets/js/app.js \
+            || grep -q "apiAdapters.parseChatStreamEvent(chatRequest.protocol" assets/js/app.js
           grep -q "CHAT_PROTOCOL_OPENAI_RESPONSES" assets/js/rphub-api-adapters.js
-          grep -q "selectModel(model.id, model.providerId)" index.html
+          # Pre-split index inline list OR modular component binding.
+          grep -q "selectModel(model.id, model.providerId)" index.html \
+            || grep -q ':is-model-selected="isModelSelected"' index.html \
+            || grep -q "@select=\"selectModel\"" index.html
           grep -q "assets/js/rphub-api-adapters.js" index.html
           grep -q "secure workshop settings bridge" assets/js/app.js
           grep -q "apiAdapters.buildChatRequest" character/index.html
           grep -q "apiAdapters.parseChatStreamEvent" character/index.html
           grep -q "event.source !== window.parent" character/index.html
-          node -e "const fs=require('fs');const html=fs.readFileSync('index.html','utf8');if(html.indexOf('rphub-api-adapters.js')>html.indexOf('assets/js/app.js'))process.exit(1);const char=fs.readFileSync('character/index.html','utf8');if(char.indexOf('../assets/js/rphub-api-adapters.js')>char.indexOf('<script>'))process.exit(1)"
+          # Post-split ui-components frameId + provider-aware model modal.
+          if [ -f assets/js/ui-components.js ]; then
+            grep -q "frameId: String" assets/js/ui-components.js
+            grep -q 'id="frameId"' assets/js/ui-components.js || grep -q ":id=\"frameId\"" assets/js/ui-components.js
+            grep -q "model.providerId" assets/js/ui-components.js
+          fi
+          # Novel page adapter routes (when novel shell exists).
+          if [ -f novel/index.html ]; then
+            grep -q "rphub-api-adapters.js" novel/index.html
+            grep -q "requestNovelChat" novel/index.html
+            grep -q "RPHubApiAdapters\|apiAdapters" novel/index.html
+          fi
+          # Novel parent bridge should expose protocol-aware provider map when present.
+          grep -q "getNovelFrame\|mapNovelProvider\|REQUEST_RPHUB_API_SETTINGS" assets/js/app.js
+          node -e "const fs=require('fs');const html=fs.readFileSync('index.html','utf8');if(html.indexOf('rphub-api-adapters.js')>html.indexOf('assets/js/app.js'))process.exit(1);const char=fs.readFileSync('character/index.html','utf8');const adapter=char.indexOf('../assets/js/rphub-api-adapters.js');const inline=char.search(/<script(?![^>]*src=)/i);if(adapter<0||(inline>=0&&adapter>inline))process.exit(1);if(fs.existsSync('novel/index.html')){const novel=fs.readFileSync('novel/index.html','utf8');if(!novel.includes('rphub-api-adapters.js')||!novel.includes('requestNovelChat'))process.exit(1);}"
 
       - name: Commit reconciled result
         id: commit

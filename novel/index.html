@@ -6,6 +6,8 @@
     <title>墨韵·造梦</title>
     <!-- Vue 3 -->
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- RP-Hub-Sync API adapter runtime -->
+    <script src="../assets/js/rphub-api-adapters.js"></script>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Marked for Markdown rendering -->
@@ -1300,6 +1302,7 @@
                     providerId: '',
                     apiUrl: '',
                     apiKey: '',
+                    chatProtocol: '',
                     model: '',
                     reviewModel: '',
                     commentModel: ''
@@ -1539,44 +1542,21 @@
                     // 并发调用函数
                     const callAI = async (persona) => {
                         try {
-                            const response = await fetch(getApiEndpoint('chat/completions'), {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.value.apiKey}` },
-                                body: JSON.stringify({
-                                    model: reviewModel,
-                                    messages: [
-                                        { role: "system", content: persona.systemPrompt },
-                                        { role: "user", content: fullContent }
-                                    ],
-                                    stream: true
-                                })
+                            const { request, fetchPromise } = requestNovelChat({
+                                model: reviewModel,
+                                messages: [
+                                    { role: "system", content: persona.systemPrompt },
+                                    { role: "user", content: fullContent }
+                                ],
+                                stream: true,
                             });
-
+                            const response = await fetchPromise;
                             if (!response.ok) throw new Error(response.statusText);
-
-                            const reader = response.body.getReader();
-                            const decoder = new TextDecoder();
-                            let buffer = '';
-
-                            while (true) {
-                                const { done, value } = await reader.read();
-                                if (done) break;
-                                buffer += decoder.decode(value, { stream: true });
-                                const lines = buffer.split('\n');
-                                buffer = lines.pop();
-
-                                for (const line of lines) {
-                                    if (line.startsWith('data: ')) {
-                                        const dataStr = line.slice(6);
-                                        if (dataStr === '[DONE]') continue;
-                                        try {
-                                            const data = JSON.parse(dataStr);
-                                            const content = data.choices[0].delta.content || '';
-                                            reviews.value[persona.id] += content;
-                                        } catch (e) { }
-                                    }
-                                }
-                            }
+                            reviews.value[persona.id] = await readNovelStream(
+                                response,
+                                request.protocol,
+                                (fullText) => { reviews.value[persona.id] = fullText; },
+                            );
                             reviewStatus.value[persona.id] = 'done';
                         } catch (e) {
                             console.error(`${persona.name} 点评失败:`, e);
@@ -2280,6 +2260,83 @@
                     const baseUrl = String(settings.value.apiUrl || '').replace(/\/+$/, '');
                     return `${baseUrl}${baseUrl.toLowerCase().endsWith('/v1') ? '' : '/v1'}/${path}`;
                 };
+                // RP-Hub-Sync novel API adapter routes v1
+                const apiAdapters = window.RPHubApiAdapters;
+                if (!apiAdapters || typeof apiAdapters.buildChatRequest !== 'function') {
+                    throw new Error('API 协议适配器未加载');
+                }
+                const getNovelChatProtocol = () => {
+                    const fromSettings = String(settings.value.chatProtocol || '').trim();
+                    if (fromSettings) return fromSettings;
+                    const provider = selectedApiProvider.value;
+                    return String(provider?.chatProtocol || apiAdapters.CHAT_PROTOCOL_OPENAI_CHAT).trim()
+                        || apiAdapters.CHAT_PROTOCOL_OPENAI_CHAT;
+                };
+                const requestNovelChat = ({ model, messages, stream, temperature, signal }) => {
+                    if (!String(settings.value.apiUrl || '').trim()) throw new Error('请先同步并选择已配置的 RP-Hub 供应商');
+                    if (!String(settings.value.apiKey || '').trim()) throw new Error('请先同步并选择已配置的 RP-Hub 供应商');
+                    if (!String(model || '').trim()) throw new Error('请先选择模型');
+                    const request = apiAdapters.buildChatRequest({
+                        protocol: getNovelChatProtocol(),
+                        baseUrl: settings.value.apiUrl,
+                        apiKey: settings.value.apiKey,
+                        model,
+                        messages,
+                        stream: !!stream,
+                        temperature,
+                        signal,
+                    });
+                    return { request, fetchPromise: fetch(request.url, request.init) };
+                };
+                const readNovelStream = async (response, protocol, onDelta) => {
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+                    let fullText = '';
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop() || '';
+                        for (const line of lines) {
+                            const dataStr = apiAdapters.parseSseDataLine(line);
+                            if (dataStr === null || dataStr === '' || dataStr === '[DONE]') continue;
+                            try {
+                                const payload = JSON.parse(dataStr);
+                                const streamEvent = apiAdapters.parseChatStreamEvent(protocol, payload);
+                                if (streamEvent.error) throw new Error(streamEvent.error);
+                                const delta = streamEvent.textDelta || '';
+                                if (delta) {
+                                    fullText += delta;
+                                    if (onDelta) onDelta(fullText, delta);
+                                }
+                            } catch (error) {
+                                if (error && error.message && !/JSON|Unexpected/.test(error.message)) throw error;
+                            }
+                        }
+                    }
+                    if (buffer.trim()) {
+                        const dataStr = apiAdapters.parseSseDataLine(buffer);
+                        if (dataStr && dataStr !== '[DONE]') {
+                            try {
+                                const payload = JSON.parse(dataStr);
+                                const streamEvent = apiAdapters.parseChatStreamEvent(protocol, payload);
+                                if (streamEvent.error) throw new Error(streamEvent.error);
+                                const delta = streamEvent.textDelta || '';
+                                if (delta) {
+                                    fullText += delta;
+                                    if (onDelta) onDelta(fullText, delta);
+                                }
+                            } catch (error) {
+                                if (error && error.message && !/JSON|Unexpected/.test(error.message)) throw error;
+                            }
+                        }
+                    }
+                    return fullText;
+                };
+
+
 
                 const readRPHubSettings = () => new Promise((resolve, reject) => {
                     let request;
@@ -2341,6 +2398,7 @@
                     settings.value.providerId = provider.id;
                     settings.value.apiUrl = provider.apiUrl || '';
                     settings.value.apiKey = provider.apiKey || '';
+                    settings.value.chatProtocol = provider.chatProtocol || settings.value.chatProtocol || '';
                     globalSettings.value.activeProviderId = provider.id;
                     availableModels.value = [];
                     if (shouldSave) saveData();
@@ -2635,21 +2693,18 @@
 5. 严禁输出任何 Markdown 代码块标记（如 \`\`\`json），直接输出纯 JSON 字符串。`;
 
                     try {
-                        const response = await fetch(getApiEndpoint('chat/completions'), {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.value.apiKey}` },
-                            body: JSON.stringify({
-                                model: commentModel,
-                                messages: [
-                                    { role: "user", content: fullContent + "\n\n" + prompt }
-                                ],
-                                stream: false
-                            })
+                        const { request, fetchPromise } = requestNovelChat({
+                            model: commentModel,
+                            messages: [
+                                { role: "user", content: fullContent + "\n\n" + prompt }
+                            ],
+                            stream: false,
                         });
-
+                        const response = await fetchPromise;
                         if (!response.ok) throw new Error(response.statusText);
-                        const data = await response.json();
-                        let content = data.choices[0].message.content;
+                        const rawText = await response.text();
+                        const parsedResponse = apiAdapters.parseChatText(request.protocol, rawText);
+                        let content = parsedResponse.text || '';
                         
                         // 清理可能存在的 Markdown 标记
                         content = content.replace(/```json/g, '').replace(/```/g, '').trim();
@@ -2808,46 +2863,23 @@ ${charPrompt}
                         console.log('========================');
 
                         try {
-                            const response = await fetch(getApiEndpoint('chat/completions'), {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.value.apiKey}` },
-                                body: JSON.stringify({
-                                    model: settings.value.model,
-                                    messages: context,
-                                    stream: true,
-                                    temperature: 1.0
-                                }),
-                                signal: abortController.value.signal
+                            const { request, fetchPromise } = requestNovelChat({
+                                model: settings.value.model,
+                                messages: context,
+                                stream: true,
+                                temperature: 1.0,
+                                signal: abortController.value.signal,
                             });
-
+                            const response = await fetchPromise;
                             if (!response.ok) throw new Error(response.statusText);
-
-                            const reader = response.body.getReader();
-                            const decoder = new TextDecoder();
-                            let buffer = '';
-                            let fullContent = '';
-
-                            while (true) {
-                                const { done, value } = await reader.read();
-                                if (done) break;
-                                buffer += decoder.decode(value, { stream: true });
-                                const lines = buffer.split('\n');
-                                buffer = lines.pop();
-
-                                for (const line of lines) {
-                                    if (line.startsWith('data: ')) {
-                                        const dataStr = line.slice(6);
-                                        if (dataStr === '[DONE]') continue;
-                                        try {
-                                            const data = JSON.parse(dataStr);
-                                            const content = data.choices[0].delta.content || '';
-                                            fullContent += content;
-                                            streamContent.value = fullContent;
-                                            nextTick(() => { if (mainScroll.value) mainScroll.value.scrollTop = mainScroll.value.scrollHeight; });
-                                        } catch (e) { }
-                                    }
-                                }
-                            }
+                            let fullContent = await readNovelStream(
+                                response,
+                                request.protocol,
+                                (text) => {
+                                    streamContent.value = text;
+                                    nextTick(() => { if (mainScroll.value) mainScroll.value.scrollTop = mainScroll.value.scrollHeight; });
+                                },
+                            );
 
                             const lines = fullContent.trim().split('\n');
                             let title = '';
