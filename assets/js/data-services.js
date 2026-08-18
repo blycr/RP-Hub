@@ -328,21 +328,38 @@
         ? items.filter(isVectorMemory).map(prepareMemoryForRuntime)
         : [];
 
-    const prepareClassicMemoriesForRuntime = (items) => {
-        if (!Array.isArray(items)) return [];
-        return items
-            .filter(memory => memory?.classicMemory === true && String(memory.summary || '').trim())
-            .map(memory => {
-                const { storyTime: _storedStoryTime, ...memoryData } = memory;
-                return markRuntimeRaw({
-                    ...memoryData,
-                    turn: Math.max(1, Number(memory.turn) || 1),
-                    summary: String(memory.summary || '').trim(),
-                    sourceUserIds: Array.isArray(memory.sourceUserIds) ? memory.sourceUserIds.filter(Boolean) : [],
-                    sourceAssistantIds: Array.isArray(memory.sourceAssistantIds) ? memory.sourceAssistantIds.filter(Boolean) : []
-                });
-            });
+    const normalizeClassicMemoryForRuntime = (memory, includeSources = true) => {
+        if (memory?.classicMemory !== true || !String(memory.summary || '').trim()) return null;
+        const { storyTime: _storedStoryTime, ...memoryData } = memory;
+        const fallbackTurn = Math.max(1, Number(memory.turn) || 1);
+        const secondaryCompressed = memory.secondaryCompressed === true;
+        const turnStart = secondaryCompressed
+            ? Math.max(1, Number(memory.turnStart) || fallbackTurn)
+            : fallbackTurn;
+        const turnEnd = secondaryCompressed
+            ? Math.max(turnStart, Number(memory.turnEnd) || fallbackTurn)
+            : fallbackTurn;
+        const normalized = {
+            ...memoryData,
+            turn: secondaryCompressed ? turnEnd : fallbackTurn,
+            summary: String(memory.summary || '').trim(),
+            sourceUserIds: Array.isArray(memory.sourceUserIds) ? memory.sourceUserIds.filter(Boolean) : [],
+            sourceAssistantIds: Array.isArray(memory.sourceAssistantIds) ? memory.sourceAssistantIds.filter(Boolean) : []
+        };
+        if (secondaryCompressed) {
+            normalized.secondaryCompressed = true;
+            normalized.turnStart = turnStart;
+            normalized.turnEnd = turnEnd;
+            normalized.sourceMemories = includeSources && Array.isArray(memory.sourceMemories)
+                ? memory.sourceMemories.map(item => normalizeClassicMemoryForRuntime(item, false)).filter(Boolean)
+                : [];
+        }
+        return markRuntimeRaw(normalized);
     };
+
+    const prepareClassicMemoriesForRuntime = (items) => Array.isArray(items)
+        ? items.map(memory => normalizeClassicMemoryForRuntime(memory)).filter(Boolean)
+        : [];
 
     const splitLongMemoryParagraph = (paragraph, maxLength = 1800) => {
         const text = String(paragraph || '').trim();
@@ -627,6 +644,7 @@
         };
         if (message.id) nextMessage.id = message.id;
         if (Number.isFinite(message._contextFloor)) nextMessage._contextFloor = message._contextFloor;
+        if (message._preventContextMerge === true) nextMessage._preventContextMerge = true;
         if (trackSources) nextMessage._sourceIndexes = getMessageSourceIndexes(message, index, true);
         else if (Array.isArray(message?._sourceIndexes)) nextMessage._sourceIndexes = getMessageSourceIndexes(message, index, false);
         if (Array.isArray(message?._worldInfoEntries)) nextMessage._worldInfoEntries = message._worldInfoEntries;
@@ -647,7 +665,11 @@
 
             const nextMessage = toPlainContextMessage(message, index, trackSources);
             const previous = merged[merged.length - 1];
-            if (previous && previous.role === nextMessage.role && mergeRoleSet.has(nextMessage.role)) {
+            if (previous
+                && previous.role === nextMessage.role
+                && mergeRoleSet.has(nextMessage.role)
+                && previous._preventContextMerge !== true
+                && nextMessage._preventContextMerge !== true) {
                 previous.content = [previous.content, nextMessage.content].filter(Boolean).join('\n\n');
                 if (!previous.name && nextMessage.name) previous.name = nextMessage.name;
                 if (Number.isFinite(nextMessage._contextFloor)) {
@@ -885,6 +907,7 @@
             name: getDisplayName(entry),
             triggers: getTriggerText(entry)
         }));
+        let displayedFloor = 0;
         const contextMessages = (Array.isArray(messages) ? messages : []).map(message => {
             const injectedWorldInfos = new Map();
             (Array.isArray(message._worldInfoEntries) ? message._worldInfoEntries : []).forEach(entry => {
@@ -936,7 +959,7 @@
                 name: message.name,
                 content: message.content,
                 renderedContent,
-                floor: Number.isFinite(message._contextFloor) ? message._contextFloor : null,
+                floor: Number.isFinite(message._contextFloor) ? ++displayedFloor : null,
                 isMemory,
                 wiTriggers: Array.from(injectedWorldInfos.entries()).map(([name, triggers]) => ({ name, triggers }))
             };
@@ -1456,8 +1479,7 @@
 
     const buildExecutableHtmlDocument = (rawHtml) => {
         const metaViewport = '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">';
-        const hudCSS = '.sinan-hud{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;padding:12px;background:linear-gradient(to bottom right,rgba(255,255,255,0.9),rgba(255,255,255,0.6));border-radius:12px;border:1px solid rgba(0,0,0,0.08);backdrop-filter:blur(4px)}.char-card{flex:1 1 140px;background:#fff;padding:10px;border-radius:8px;border-left:4px solid #ddd;box-shadow:0 2px 6px rgba(0,0,0,0.04);display:flex;flex-direction:column;gap:4px;font-size:12px;position:relative;overflow:hidden;transition:transform 0.2s}.char-card:hover{transform:translateY(-2px);box-shadow:0 4px 8px rgba(0,0,0,0.1)}.char-name{font-weight:700;font-size:14px;color:#374151;display:flex;justify-content:space-between;align-items:center}.char-mood{color:#6b7280;font-size:12px}.char-loc{color:#9ca3af;font-size:11px;margin-top:auto;padding-top:4px}.bar-bg{height:4px;background:#f3f4f6;border-radius:2px;overflow:hidden;margin-top:6px}.bar-fill{height:100%;background:#10b981;border-radius:2px}.c-tongqiu{border-left-color:#f59e0b}.c-tongqiu .bar-fill{background:#f59e0b}.c-yufan{border-left-color:#3b82f6}.c-yufan .bar-fill{background:#3b82f6}.c-linghu{border-left-color:#8b5cf6}.c-linghu .bar-fill{background:#8b5cf6}.c-chongtian{border-left-color:#ef4444}.c-chongtian .bar-fill{background:#ef4444}';
-        const resetStyle = '<style>html,body{margin:0!important;padding:0!important;width:100%!important;height:auto!important;min-height:auto!important;word-wrap:break-word!important;box-sizing:border-box!important;overflow:hidden!important;}::-webkit-scrollbar{display:none;}*,*::before,*::after{box-sizing:inherit!important;}img,video,canvas,svg{max-width:100%!important;height:auto!important;}table{display:block!important;overflow-x:auto!important;max-width:100%!important;}pre{white-space:pre-wrap!important;word-wrap:break-word!important;max-width:100%!important;}.container,.reality-panel,.app-container{max-width:100%!important;width:100%!important;margin:0!important;border-radius:0!important;box-shadow:none!important;border:none!important;height:auto!important;min-height:0!important;}body>div:first-child{margin:0!important;max-width:100%!important;height:auto!important;min-height:0!important;}#app{height:auto!important;min-height:auto!important;}.bottom-safe{display:none!important;height:0!important;min-height:0!important;margin:0!important;padding:0!important;}' + hudCSS + '</style>';
+        const resetStyle = '<style>html,body{margin:0!important;padding:0!important;width:100%!important;height:auto!important;min-height:auto!important;word-wrap:break-word!important;box-sizing:border-box!important;overflow:hidden!important;}::-webkit-scrollbar{display:none;}*,*::before,*::after{box-sizing:inherit!important;}img,video,canvas,svg{max-width:100%!important;height:auto!important;}table{display:block!important;overflow-x:auto!important;max-width:100%!important;}pre{white-space:pre-wrap!important;word-wrap:break-word!important;max-width:100%!important;}.container,.reality-panel,.app-container{max-width:100%!important;width:100%!important;margin:0!important;border-radius:0!important;box-shadow:none!important;border:none!important;height:auto!important;min-height:0!important;}body>div:first-child{margin:0!important;max-width:100%!important;height:auto!important;min-height:0!important;}#app{height:auto!important;min-height:auto!important;}.bottom-safe{display:none!important;height:0!important;min-height:0!important;margin:0!important;padding:0!important;}</style>';
         const jqueryScript = '<script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js" defer><\/script>';
         const scriptShim = `
             <script>
@@ -1612,16 +1634,31 @@ ${content}
         return typeof schema === 'string' ? schema : JSON.stringify(schema, null, 2);
     };
 
-    const UI_TEMPLATE_UPDATES_OPEN_TAG = '<ui_template_updates>';
-    const UI_TEMPLATE_UPDATES_CLOSE_TAG = '</ui_template_updates>';
-    const UI_TEMPLATE_UPDATES_PATTERN = /<ui_template_updates\b[^>]*>([\s\S]*?)<\/ui_template_updates>/i;
-    const UI_TEMPLATE_UPDATES_STRIP_PATTERN = /<ui_template_updates\b[^>]*>[\s\S]*?<\/ui_template_updates>/gi;
-    const UI_TEMPLATE_UPDATES_OPEN_STRIP_PATTERN = /<ui_template_updates\b[^>]*>[\s\S]*$/i;
+    const UI_TEMPLATE_UPDATES_PATTERN = /<ui_template_updates\b[^>]*>([\s\S]*?)<\/ui_template_updates>|(\{\s*"updates"\s*:[\s\S]*$)/i;
+    const findUiTemplateUpdateBlock = (text) => {
+        const source = String(text || '');
+        const taggedCandidate = window.RPHubCardUtils.findLastUnprotectedMatch(source, /<ui_template_updates\b[^>]*>/i);
+        const taggedTail = taggedCandidate ? source.slice(taggedCandidate.index).trimEnd() : '';
+        const tagged = taggedTail.match(/^<ui_template_updates\b[^>]*>([\s\S]*?)(?:<\/ui_template_updates>)?$/i);
+        if (tagged) {
+            const result = [taggedTail, tagged[1], undefined];
+            result.index = taggedCandidate.index;
+            return result;
+        }
+        const candidate = window.RPHubCardUtils.findLastUnprotectedMatch(source, /\{\s*"updates"\s*:/i);
+        if (!candidate) return null;
+        const tail = source.slice(candidate.index).trimEnd();
+        if (!/^\{\s*"updates"\s*:/i.test(tail)) return null;
+        const result = [tail, undefined, tail];
+        result.index = candidate.index;
+        return result;
+    };
 
-    const stripUiTemplateUpdateBlock = (text) => String(text || '')
-        .replace(UI_TEMPLATE_UPDATES_STRIP_PATTERN, '')
-        .replace(UI_TEMPLATE_UPDATES_OPEN_STRIP_PATTERN, '')
-        .trimEnd();
+    const stripUiTemplateUpdateBlock = (text) => {
+        const source = String(text || '');
+        const match = findUiTemplateUpdateBlock(source);
+        return match ? source.slice(0, match.index).trimEnd() : source;
+    };
 
     const createDetailedJsonSyntaxError = (error, content) => {
         const positionMatch = String(error?.message || '').match(/position\s+(\d+)/i);
@@ -1655,6 +1692,8 @@ ${content}
 
     const parseUiTemplateUpdateJson = (rawContent) => {
         const normalizedContent = String(rawContent || '')
+            .replace(/^<ui_template_updates\b[^>]*>\s*/i, '')
+            .replace(/\s*<\/ui_template_updates>$/i, '')
             .replace(/^```(?:json)?\s*/i, '')
             .replace(/```\s*$/i, '')
             .trim();
@@ -1728,7 +1767,11 @@ ${content}
                 return;
             }
             if (!templatesById.has(id)) {
-                issues.push(`${location}使用了未知模板ID“${id}”`);
+                const validIds = [...templatesById.keys()];
+                const expected = validIds.length === 1
+                    ? `，当前模板ID应为“${validIds[0]}”`
+                    : `，可用模板ID：${validIds.map(value => `“${value}”`).join('、')}`;
+                issues.push(`${location}使用了未知模板ID“${id}”${expected}`);
                 return;
             }
             if (!receivedById.has(id)) receivedById.set(id, []);
@@ -1863,14 +1906,13 @@ ${content}
     };
 
     window.RPHubUiTemplateUtils = {
-        UI_TEMPLATE_UPDATES_CLOSE_TAG,
-        UI_TEMPLATE_UPDATES_OPEN_TAG,
         UI_TEMPLATE_UPDATES_PATTERN,
         applyUiTemplateUpdateListToTemplate,
         buildExecutableHtmlDocument,
         cloneUiObject,
         cloneUiValue,
         createExecutableHtmlIframe,
+        findUiTemplateUpdateBlock,
         getUiTemplateValue,
         inferInitialUiTemplateState,
         normalizeUiTemplate,

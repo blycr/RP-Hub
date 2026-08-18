@@ -153,6 +153,7 @@
                 model: options.model,
                 messages: options.messages,
                 temperature: options.temperature,
+                ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
                 stream: options.stream,
                 ...(options.stream ? { stream_options: { include_usage: true } } : {})
             }),
@@ -214,7 +215,7 @@
                 }
             }
             if (!usesFrame && !trimmed.includes('```')) {
-                usesFrame = /(<!doctype html>|<html\b[^>]*>)/i.test(trimmed);
+                usesFrame = /(<!doctype html>|<html\b[^>]*>|^\s*<(style|script)\b)/i.test(trimmed);
             }
             return cacheValue(frameDetectionCache, cacheKey, usesFrame);
         };
