@@ -195,6 +195,26 @@ const app = createApp({
         WorldInfoEditorModal
     },
     setup() {
+        // ============================================================
+        // RP-Hub-Sync 最小补丁：安全接收广场 iframe 发来的 plaza cardId
+        // ============================================================
+        window.__rphub_pending_plaza_card__ = null;
+        window.addEventListener('message', (event) => {
+            const plazaFrame = document.getElementById('rphub-square-frame');
+            if (!plazaFrame || event.source !== plazaFrame.contentWindow) return;
+            if (event.origin !== 'https://rphforum.zeabur.app') return;
+            const data = event.data;
+            if (!data || data.type !== 'RPHUB_PLAZA_CARD'
+                || typeof data.cardId !== 'string' || !data.cardId.trim()) return;
+            window.__rphub_pending_plaza_card__ = {
+                type: 'RPHUB_PLAZA_CARD',
+                cardId: data.cardId.trim(),
+                name: typeof data.name === 'string' ? data.name.trim() : '',
+                updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : null
+            };
+            console.log('[RP-Hub Sync] pending plaza card:', data.cardId, data.name);
+        });
+        // ============================================================
         const cardUtils = window.RPHubCardUtils;
         const {
             fontFamilies: fontFamilyOptions,
@@ -9351,6 +9371,28 @@ const app = createApp({
                         uuid: generateUUID(),
                         createdAt: Date.now()
                     };
+
+                    // ============================================================
+                    // RP-Hub-Sync 最小补丁：注入 plaza cardId
+                    // ============================================================
+                    const pending = window.__rphub_pending_plaza_card__;
+                    if (pending && pending.cardId) {
+                        const importedName = typeof char?.name === 'string' ? char.name : (typeof name === 'string' ? name : '');
+                        const fileName = file ? file.name.replace(/\.png$/i, '') : '';
+                        const matchByName = pending.name && (
+                            pending.name === importedName ||
+                            pending.name === fileName
+                        );
+                        if (matchByName) {
+                            char.plazaId = pending.cardId;
+                            char.plazaImportedAt = Date.now();
+                            char.plazaLastKnownUpdatedAt = pending.updatedAt || null;
+                            char.isLocal = false;
+                            window.__rphub_pending_plaza_card__ = null;
+                            console.log('[RP-Hub Sync] injected plazaId for', importedName, pending.cardId);
+                        }
+                    }
+                    // ============================================================
 
                     characters.value.push(char);
 
