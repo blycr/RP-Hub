@@ -1424,62 +1424,88 @@
 
                             <!-- Main API Inputs -->
                             <div class="grid grid-cols-1 gap-5">
-                                <!-- RP-Hub-Sync dynamic API provider settings v4 -->
                                 <div class="group">
-                                    <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 ml-1">API 提供商</label>
+                                    <!-- RP-Hub-Sync dynamic API provider settings v4 -->
+                                    <div class="mb-2 ml-1 flex items-center justify-between gap-3">
+                                        <label class="text-xs font-bold text-gray-500 uppercase tracking-wider">API 提供商</label>
+                                        <a href="https://cdn.sta1n.cn/keys" target="_blank" rel="noopener noreferrer"
+                                            class="text-teal-600 hover:text-teal-700 hover:underline cursor-pointer transition-colors text-xs normal-case font-medium">
+                                            获取API
+                                        </a>
+                                    </div>
                                     <div class="relative mb-2 api-provider-selector-container">
                                         <button type="button" @click="showApiProviderSelector = !showApiProviderSelector"
                                             class="w-full h-12 bg-gray-50/60 border-2 border-gray-100 rounded-xl px-3 py-0 flex items-center justify-between text-left hover:bg-white hover:border-teal-300 hover:shadow-sm transition-all active:scale-[0.99]">
                                             <span class="flex items-center min-w-0">
-                                                <span class="w-7 h-7 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center mr-2 shrink-0 overflow-hidden">
+                                                <span
+                                                    class="w-7 h-7 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center mr-2 shrink-0 overflow-hidden">
                                                     <img v-if="selectedApiProvider.icon" :src="selectedApiProvider.icon"
-                                                        :alt="selectedApiProvider.name" class="w-5 h-5 object-contain"
+                                                        :alt="selectedApiProvider.name"
+                                                        class="w-5 h-5 object-contain"
                                                         @error="$event.target.style.visibility = 'hidden'">
-                                                    <svg v-else class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                            d="M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2c2.5 2.7 4 6.2 4 10s-1.5 7.3-4 10c-2.5-2.7-4-6.2-4-10s1.5-7.3 4-10z"></path>
+                                                    <svg v-else class="w-4 h-4 text-gray-400" fill="none"
+                                                        stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                                            stroke-width="2"
+                                                            d="M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2c2.5 2.7 4 6.2 4 10s-1.5 7.3-4 10c-2.5-2.7-4-6.2-4-10s1.5-7.3 4-10z">
+                                                        </path>
                                                     </svg>
                                                 </span>
-                                                <span class="block min-w-0 text-sm font-bold text-gray-700 truncate">{{ selectedApiProvider.name }}</span>
+                                                <span class="block min-w-0 text-sm font-bold text-gray-700 truncate">{{
+                                                    selectedApiProvider.name }}</span>
                                             </span>
-                                            <svg class="w-4 h-4 text-gray-400 ml-2 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                            <svg class="w-4 h-4 text-gray-400 ml-2 shrink-0" fill="none"
+                                                stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                    d="M19 9l-7 7-7-7"></path>
                                             </svg>
                                         </button>
                                         <div v-if="showApiProviderSelector"
-                                            class="absolute left-0 right-0 top-full z-40 mt-2 w-full max-h-80 overflow-y-auto bg-white/95 border border-gray-200 rounded-xl shadow-2xl shadow-gray-900/15 p-1.5 backdrop-blur-xl custom-scrollbar">
-                                            <button v-for="provider in apiProviderOptions" :key="provider.id" type="button"
-                                                @click="selectApiProvider(provider)"
+                                            class="absolute left-0 right-0 top-full z-40 mt-2 w-full max-h-96 overflow-y-auto bg-white border border-gray-200 rounded-xl shadow-xl p-2">
+                                            <button v-for="provider in apiProviderOptions" :key="provider.id"
+                                                type="button" @click="selectApiProvider(provider)"
                                                 :class="['w-full px-3 py-2.5 rounded-lg flex items-center text-left transition-all', selectedApiProvider.id === provider.id ? 'bg-teal-50 text-teal-700' : 'hover:bg-gray-50 text-gray-700']">
-                                                <span class="w-8 h-8 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center mr-3 shrink-0 overflow-hidden">
-                                                    <img :src="provider.icon" :alt="provider.name" class="w-5 h-5 object-contain"
+                                                <span
+                                                    class="w-8 h-8 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center mr-3 shrink-0 overflow-hidden">
+                                                    <img :src="provider.icon" :alt="provider.name"
+                                                        class="w-5 h-5 object-contain"
                                                         @error="$event.target.style.visibility = 'hidden'">
                                                 </span>
                                                 <span class="min-w-0 flex-1">
-                                                    <span class="block text-sm font-bold truncate">{{ provider.name }}</span>
-                                                    <span class="block text-xs text-gray-400 font-mono truncate">{{ provider.apiUrl }}</span>
+                                                    <span class="block text-sm font-bold truncate">{{ provider.name
+                                                        }}</span>
+                                                    <span class="block text-xs text-gray-400 font-mono truncate">{{
+                                                        provider.apiUrl }}</span>
                                                 </span>
-                                                <svg v-if="selectedApiProvider.id === provider.id" class="w-4 h-4 ml-2 text-teal-600 shrink-0"
-                                                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                                <svg v-if="selectedApiProvider.id === provider.id"
+                                                    class="w-4 h-4 ml-2 text-teal-600 shrink-0" fill="none"
+                                                    stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                                        stroke-width="2" d="M5 13l4 4L19 7"></path>
                                                 </svg>
                                             </button>
-                                            <button v-for="provider in customApiProviderOptions" :key="provider.id" type="button"
-                                                @click="selectApiProvider(provider)"
-                                                :class="['w-full mt-1 px-3 py-2.5 rounded-lg flex items-center text-left transition-all', selectedApiProvider.id === provider.id ? 'bg-teal-50 text-teal-700' : 'hover:bg-gray-50 text-gray-700']">
-                                                <span class="w-8 h-8 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center mr-3 shrink-0">
-                                                    <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                            d="M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2c2.5 2.7 4 6.2 4 10s-1.5 7.3-4 10c-2.5-2.7-4-6.2-4-10s1.5-7.3 4-10z"></path>
+                                            <button v-for="provider in customApiProviderOptions" :key="provider.id"
+                                                type="button" @click="selectApiProvider(provider)"
+                                                :class="['w-full mt-2 px-3 py-2.5 border-t border-gray-100 rounded-lg flex items-center text-left transition-all', selectedApiProvider.id === provider.id ? 'bg-teal-50 text-teal-700' : 'hover:bg-gray-50 text-gray-700']">
+                                                <span
+                                                    class="w-8 h-8 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center mr-3 shrink-0">
+                                                    <svg class="w-5 h-5 text-gray-500" fill="none"
+                                                        stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                                            stroke-width="2"
+                                                            d="M12 2a10 10 0 100 20 10 10 0 000-20zM2 12h20M12 2c2.5 2.7 4 6.2 4 10s-1.5 7.3-4 10c-2.5-2.7-4-6.2-4-10s1.5-7.3 4-10z">
+                                                        </path>
                                                     </svg>
                                                 </span>
                                                 <span class="min-w-0 flex-1">
                                                     <span class="block text-sm font-bold truncate">{{ provider.name }}</span>
-                                                    <span class="block text-xs text-gray-400 font-mono truncate">{{ provider.apiUrl || '未配置地址' }}</span>
+                                                    <span class="block text-xs text-gray-400 truncate">手动输入 API 地址</span>
                                                 </span>
-                                                <svg v-if="selectedApiProvider.id === provider.id" class="w-4 h-4 ml-2 text-teal-600 shrink-0"
-                                                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                                                <svg v-if="selectedApiProvider.id === provider.id"
+                                                    class="w-4 h-4 ml-2 text-teal-600 shrink-0" fill="none"
+                                                    stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                                        stroke-width="2" d="M5 13l4 4L19 7"></path>
                                                 </svg>
                                             </button>
                                             <button type="button" @click="addCustomApiProvider"
@@ -1613,15 +1639,22 @@
 
                                 <!-- Image Generation Settings -->
                                 <div class="pt-6 border-t border-gray-100 mt-6">
-                                    <h4 class="settings-section-heading">
-                                        <svg class="w-4 h-4 mr-2 text-gray-400" fill="none" stroke="currentColor"
-                                            viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4">
-                                            </path>
-                                        </svg>
-                                        生图设置
-                                    </h4>
+                                    <div class="mb-4 flex items-center justify-between gap-3">
+                                        <h4 class="flex items-center text-xs font-bold text-gray-500 uppercase tracking-wider">
+                                            <svg class="w-4 h-4 mr-2 text-gray-500" fill="none" stroke="currentColor"
+                                                viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                    d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4">
+                                                </path>
+                                            </svg>
+                                            生图设置
+                                        </h4>
+                                        <a href="https://www.qianxun1688.com/links/D07F549B" target="_blank"
+                                            rel="noopener noreferrer"
+                                            class="text-teal-600 hover:text-teal-700 hover:underline cursor-pointer transition-colors text-xs normal-case font-medium">
+                                            获取生图密钥
+                                        </a>
+                                    </div>
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                         <!-- Image Key -->
                                         <div
