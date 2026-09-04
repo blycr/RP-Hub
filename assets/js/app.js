@@ -3,6 +3,14 @@ const { useStorageManagement, useTokenUsage } = window.RPHubComposables;
 const { createMessageRenderer } = window.RPHubMessageRenderer;
 const { AppSidebar } = window.RPHubLayoutComponents;
 const { requestChatCompletion } = window.RPHubApiClient;
+const { buildApiEndpoint } = window.RPHubApiUtils;
+
+const getOpenAICompatUrlForBase = (baseUrl, endpoint) => {
+    const normalizedBase = String(baseUrl || '').replace(/\s+/g, '').replace(/\/+$/, '');
+    const bareBase = normalizedBase.replace(/[?#].*$/, '').replace(/\/+$/, '');
+    const versionedBase = bareBase.endsWith('/v1') ? bareBase : `${bareBase}/v1`;
+    return `${versionedBase}/${String(endpoint || '').replace(/^\/+/, '')}`;
+};
 const {
     ActionConfirmModal,
     ActiveToolEditorModal,
@@ -109,7 +117,7 @@ const {
     inferInitialUiTemplateState,
     normalizeUiTemplate,
     normalizeUiTemplateUpdateList,
-    parseUiTemplateUpdateJson,
+    parseUiTemplateUpdates,
     renderUiTemplateHtml,
     sanitizeUiTemplateImportEntry,
     setUiTemplateValue,
@@ -134,10 +142,7 @@ const {
     setStoredValue,
     unwrapForStorage
 } = window.RPHubStorage;
-const {
-    prompts: BUILTIN_PROMPTS,
-    summaryLengthRequirements: SUMMARY_LENGTH_REQUIREMENTS
-} = window.RPHubBuiltinContent;
+const { prompts: BUILTIN_PROMPTS } = window.RPHubBuiltinContent;
 const {
     activeTools: activeToolConfig,
     apiProviderOptions,
@@ -162,6 +167,23 @@ marked.use({
     }
 });
 
+const RollingText = {
+    props: { value: { type: [String, Number], default: '' } },
+    setup(props) {
+        const text = computed(() => String(props.value ?? ''));
+        const characters = computed(() => Array.from(text.value));
+        return { characters, text };
+    },
+    template: `
+        <span class="inline-flex" :aria-label="text">
+            <span v-for="(character, index) in characters" :key="index" class="inline-grid overflow-hidden">
+                <transition name="usage-roll" appear>
+                    <span :key="character" class="col-start-1 row-start-1" aria-hidden="true">{{ character }}</span>
+                </transition>
+            </span>
+        </span>`
+};
+
 const app = createApp({
     components: {
         ActionConfirmModal,
@@ -182,6 +204,7 @@ const app = createApp({
         PresetEditorModal,
         RegexEditorModal,
         RetryConfirmModal,
+        RollingText,
         SettingsHelp,
         SettingsPageHeader,
         StatusNoticeModal,
@@ -372,6 +395,7 @@ const app = createApp({
         let activeToolQueueAbortController = null;
         const abortController = ref(null);
         const userInput = ref('');
+        const pendingCardInteraction = ref('');
         const pendingChatImages = ref([]);
         const pendingChatImageReadCount = ref(0);
         let chatImageSelectionEpoch = 0;
@@ -628,6 +652,8 @@ const app = createApp({
 
             useCharacterBackground: true,
             immersiveMode: false,
+            showLatestUsageBar: false,
+            styleFilterEnabled: true,
             uiTemplateEnabled: false,
             uiTemplateModel: '',
             uiTemplateAnalysisDepth: 4,
@@ -1353,15 +1379,46 @@ const app = createApp({
             if (role === 'assistant') return 'bg-purple-100 text-purple-700 border-purple-200';
             return 'bg-red-100 text-red-700 border-red-200';
         };
-        const blockedStyleSentencePattern = /[^。！？!?\n]*(?:不容置疑|(?:不易|难以)(?:察觉|觉察)|(?:微|几)不可察|一抹|弧度|生理性|像(?:是)?[^。！？!?\n]*?[，,]\s*又像(?:是)?|不是[^。！？!?\n]*?(?:而是|[，,]\s*(?:是|(?:更|倒|反倒)?像是)))[^。！？!?\n]*(?:[。！？!?]+[”’」』】）)]*(?:\*\*|__)?)?/g;
+        const blockedStyleSentencePattern = /[^。！？!?\n]*(?:不容置疑|(?:不易|难以)(?:察觉|觉察)|(?:微|几)不可察|一抹|弧度|生理性|微微泛|因为用力|像在|风箱|手术刀|上扬|带着一种|语气很平|声音很平|(?:指尖|指节|指关节)[^。！？!?\n]*(?:发白|泛白)|像(?:是)?[^。！？!?\n]*?[，,]\s*又像(?:是)?|不是[^。！？!?\n]*?(?:而是|就是|[，,]\s*(?:是|(?:更|倒|反倒)?像是)))[^。！？!?\n]*(?:[。！？!?]+[”’」』】）)]*(?:\*\*|__)?)?/g;
+        const standaloneWordCountSentencePattern = /(^|[。！？!?\n]+[”’」』】）)]*)[ \t]*(?:\*\*|__)?(?:\d+|[零〇一二两三四五六七八九十百千万]+)个字[^。！？!?\n]*(?:[。！？!?]+[”’」』】）)]*(?:\*\*|__)?)?/gm;
         const paleFingerClausePattern = /(?:^|[，,；;])[^，,。！？!?；;\n]*(?:指尖|指节|指关节)[^，,。！？!?；;\n]*(?:发白|泛白)[^，,。！？!?；;\n]*(?=$|[，,。！？!?；;\n])/gm;
+        const blockedStyleClausePattern = /(?:^|[，,；;])[^，,。！？!?；;\n*_]*(?:微微泛|因为用力|像在|风箱|手术刀|上扬|带着一种)[^，,。！？!?；;\n*_]*(?=(?:\*\*|__)?[ \t]*(?:$|[，,。！？!?；;\n]))/gm;
         const blockedStyleWordPattern = /极其/g;
         const quotedDialoguePattern = /(“[\s\S]*?”|『[\s\S]*?』|"[\s\S]*?")/g;
         const standaloneRenderedContentPattern = /^(?:\s|<!--[\s\S]*?-->)*(?:```|<!doctype\b|<\?xml\b|<html\b|<(?:head|body|style|script|template|svg|canvas|iframe|div|section|article|aside|header|footer|main|nav|form|table|ul|ol|pre|p|img)\b)/i;
         const isStandaloneRenderedContent = text => standaloneRenderedContentPattern.test(String(text || ''));
         const loggedBlockedStyleFragments = new Set();
-        const filterBlockedStyleText = (text, { log = false } = {}) => {
+        const openStyleFilterMessageKey = ref('');
+        const getStyleFilterMessageKey = (message, index) => String(message?.id || `message-${index}`);
+        const isStyleFilterDetailsOpen = (message, index) => (
+            openStyleFilterMessageKey.value === getStyleFilterMessageKey(message, index)
+        );
+        const toggleStyleFilterDetails = (message, index) => {
+            const key = getStyleFilterMessageKey(message, index);
+            openStyleFilterMessageKey.value = openStyleFilterMessageKey.value === key ? '' : key;
+        };
+        const normalizeStyleFilterHit = fragment => String(fragment || '')
+            .trim()
+            .replace(/^[，,；;]\s*/, '')
+            .replace(/^(?:\*\*|__)/, '')
+            .replace(/(?:\*\*|__)$/, '')
+            .trim();
+        const styleFilterHighlightPattern = /(?:不容置疑|(?:不易|难以)(?:察觉|觉察)|(?:微|几)不可察|一抹|弧度|生理性|微微泛|因为用力|像在|风箱|手术刀|上扬|带着一种|语气很平|声音很平|(?:\d+|[零〇一二两三四五六七八九十百千万]+)个字|指尖|指节|指关节|发白|泛白|不是|而是|就是|又像(?:是)?|(?:更|倒|反倒)?像是|极其)/g;
+        const getStyleFilterHitSegments = fragment => {
+            const text = String(fragment || '');
+            const segments = [];
+            let lastIndex = 0;
+            for (const match of text.matchAll(styleFilterHighlightPattern)) {
+                if (match.index > lastIndex) segments.push({ text: text.slice(lastIndex, match.index), matched: false });
+                segments.push({ text: match[0], matched: true });
+                lastIndex = match.index + match[0].length;
+            }
+            if (lastIndex < text.length) segments.push({ text: text.slice(lastIndex), matched: false });
+            return segments.length ? segments : [{ text, matched: false }];
+        };
+        const filterBlockedStyleText = (text, { log = false, collect = null } = {}) => {
             const source = String(text || '');
+            if (!settings.styleFilterEnabled) return source;
             if (isStandaloneRenderedContent(source)) return source;
             const removedFragments = [];
             const updateBlock = findUiTemplateUpdateBlock(source);
@@ -1369,8 +1426,13 @@ const app = createApp({
             const filtered = cardUtils.transformUnprotectedText(source.slice(0, filterEnd), part => part
                 .split(quotedDialoguePattern)
                 .map((fragment, index) => index % 2 ? fragment : fragment
+                    .replace(standaloneWordCountSentencePattern, (match, prefix = '') => {
+                        removedFragments.push(match.slice(prefix.length).trim());
+                        return prefix;
+                    })
                     .replace(blockedStyleSentencePattern, match => { removedFragments.push(match.trim()); return ''; })
                     .replace(paleFingerClausePattern, match => { removedFragments.push(match.trim()); return ''; })
+                    .replace(blockedStyleClausePattern, match => { removedFragments.push(match.trim()); return ''; })
                     .replace(blockedStyleWordPattern, match => { removedFragments.push(match); return ''; })
                     .replace(/^[ \t]*[，,；;]+/gm, '')
                     .replace(/[，,；;]{2,}/g, marks => marks.at(-1))
@@ -1378,6 +1440,9 @@ const app = createApp({
                     .replace(/[ \t]+\n/g, '\n')
                     .replace(/\n{3,}/g, '\n\n'))
                 .join(''));
+            if (Array.isArray(collect)) {
+                collect.push(...removedFragments.map(normalizeStyleFilterHit).filter(Boolean));
+            }
             if (log) {
                 const newFragments = removedFragments.filter(fragment => fragment && !loggedBlockedStyleFragments.has(fragment));
                 newFragments.forEach(fragment => loggedBlockedStyleFragments.add(fragment));
@@ -1446,9 +1511,7 @@ const app = createApp({
         const MEMORY_VECTOR_MIN_TOP_K = 10;
         const MEMORY_VECTOR_MAX_TOP_K = 20;
         const MEMORY_VECTOR_DEFAULT_TOP_K = 10;
-        const MEMORY_VECTOR_MIN_SIMILARITY = 40;
-        const MEMORY_VECTOR_MAX_SIMILARITY = 65;
-        const MEMORY_VECTOR_DEFAULT_SIMILARITY = 50;
+        const MEMORY_VECTOR_SIMILARITY_THRESHOLD = 45;
         const MEMORY_VECTOR_DEFAULT_DEPTH = 1;
         const CLASSIC_MEMORY_MIN_CONCURRENCY = 1;
         const CLASSIC_MEMORY_MAX_CONCURRENCY = 10;
@@ -1463,7 +1526,6 @@ const app = createApp({
         const SUMMARY_KEEP_FLOORS_MIN = 10;
         const SUMMARY_KEEP_FLOORS_MAX = 40;
         const SUMMARY_KEEP_FLOORS_DEFAULT = 20;
-        const SUMMARY_LEVEL_DEFAULT = 'balanced';
         const LIST_PAGE_SIZE = 10;
         const memories = ref([]);
         const classicMemories = ref([]);
@@ -1476,11 +1538,8 @@ const app = createApp({
             embeddingProviderId: '',
             classicProviderId: '',
             vectorTopK: MEMORY_VECTOR_DEFAULT_TOP_K,
-            similarityThreshold: MEMORY_VECTOR_DEFAULT_SIMILARITY,
-            defaultDepth: MEMORY_VECTOR_DEFAULT_DEPTH,
             vectorKeepFloors: VECTOR_KEEP_FLOORS_DEFAULT,
             summaryKeepFloors: SUMMARY_KEEP_FLOORS_DEFAULT,
-            summaryLevel: SUMMARY_LEVEL_DEFAULT,
             classicConcurrency: CLASSIC_MEMORY_DEFAULT_CONCURRENCY
         });
         const isBatchExtracting = ref(false);
@@ -1545,7 +1604,7 @@ const app = createApp({
             if (!memorySettings.classicModel && memorySettings.model) {
                 memorySettings.classicModel = String(memorySettings.model).trim();
             }
-            ['model', 'autoExtract', 'keepFloors', `re${'rankEnabled'}`, `re${'rankModel'}`].forEach(key => {
+            ['model', 'autoExtract', 'keepFloors', 'similarityThreshold', 'summaryLevel', 'defaultDepth', `re${'rankEnabled'}`, `re${'rankModel'}`].forEach(key => {
                 delete memorySettings[key];
             });
             memorySettings.mode = memorySettings.mode === MEMORY_MODE_CLASSIC
@@ -1566,19 +1625,11 @@ const app = createApp({
                 SUMMARY_KEEP_FLOORS_MAX,
                 SUMMARY_KEEP_FLOORS_DEFAULT
             );
-            if (!SUMMARY_LENGTH_REQUIREMENTS[memorySettings.summaryLevel]) {
-                memorySettings.summaryLevel = SUMMARY_LEVEL_DEFAULT;
-            }
             memorySettings.classicConcurrency = normalizeClassicMemoryConcurrency(memorySettings.classicConcurrency);
             const vectorTopK = Number(memorySettings.vectorTopK);
             memorySettings.vectorTopK = Number.isFinite(vectorTopK)
                 ? Math.max(MEMORY_VECTOR_MIN_TOP_K, Math.min(MEMORY_VECTOR_MAX_TOP_K, vectorTopK))
                 : MEMORY_VECTOR_DEFAULT_TOP_K;
-            const similarityThreshold = Number(memorySettings.similarityThreshold);
-            memorySettings.similarityThreshold = Number.isFinite(similarityThreshold)
-                ? Math.max(MEMORY_VECTOR_MIN_SIMILARITY, Math.min(MEMORY_VECTOR_MAX_SIMILARITY, Math.round(similarityThreshold)))
-                : MEMORY_VECTOR_DEFAULT_SIMILARITY;
-            memorySettings.defaultDepth = MEMORY_VECTOR_DEFAULT_DEPTH;
         };
 
         const normalizeActiveToolCallName = (value) => {
@@ -1764,6 +1815,8 @@ const app = createApp({
             displayedTokenUsageHistory,
             filteredTokenUsageHistory,
             formatTokenAggregate,
+            formatLatestTokenCount,
+            formatLatestUsageCost,
             formatTokenCount,
             formatTokenUsageTime,
             getTokenUsageTypeLabel,
@@ -1778,7 +1831,8 @@ const app = createApp({
             tokenUsageStats,
             tokenUsageTimeFilter,
             tokenUsageTimeFilterLabel,
-            tokenUsageTimeFilterOptions
+            tokenUsageTimeFilterOptions,
+            latestMainTokenUsage
         } = useTokenUsage({
             pageSize: LIST_PAGE_SIZE,
             cloneForStorage,
@@ -1787,6 +1841,8 @@ const app = createApp({
                 if (!getMainDb()) await initDB();
             },
             generateUUID,
+            getApiKey: () => settings.apiKey,
+            getApiUrl: () => settings.apiUrl,
             normalizeApiUsage,
             saveStoredValue: setStoredValue,
             toast: (...args) => showToast(...args)
@@ -2514,7 +2570,7 @@ const app = createApp({
             const imageIndex = cards.indexOf(card);
             const message = chatHistory.value[messageIndex];
             const mainText = parseCot(message?.content || '').main;
-            const imageMatches = [...mainText.matchAll(/image###([\s\S]*?)###/g)];
+            const imageMatches = [...mainText.matchAll(/image###([^\r\n]*?)(?:###|(?=\r?\n)|$)/g)];
             const imageMatch = imageMatches[imageIndex];
             if (!message || imageIndex < 0 || !imageMatch) return;
             if (card.classList.contains('is-rerolling')) return;
@@ -2771,6 +2827,9 @@ const app = createApp({
             .sort((a, b) => (Number(b.template.order) || 0) - (Number(a.template.order) || 0) || a.index - b.index)
             .map(item => item.template));
         const activeUiTemplates = computed(() => currentUiTemplates.value.filter(t => t.enabled !== false));
+        const isUiTemplateAnalysisEnabled = () => settings.uiTemplateEnabled
+            && settings.uiTemplateMainModelAnalysis
+            && activeUiTemplates.value.length > 0;
 
         const handleUiTemplateClick = (event) => {
             const trigger = event.target?.closest?.('[data-slash]');
@@ -2840,14 +2899,14 @@ const app = createApp({
 
             let updates = [];
             try {
-                const updateJson = match[1] || match[2];
-                const parsed = parseUiTemplateUpdateJson(updateJson);
+                const updateContent = match[1];
+                const parsed = parseUiTemplateUpdates(updateContent);
                 updates = normalizeUiTemplateUpdateList(parsed, templates);
             } catch (e) {
                 const reason = e instanceof SyntaxError
-                    ? `JSON格式错误：${e.message}`
+                    ? `变量块格式错误：${e.message}`
                     : e.message;
-                return recordFailure(e?.jsonSource || match[1] || match[2], reason);
+                return recordFailure(e?.jsonSource || match[1], reason);
             }
 
             const targetMessageIndex = chatHistory.value.findIndex(msg => msg === targetMessage || (targetMessage.id && msg.id === targetMessage.id));
@@ -2856,9 +2915,7 @@ const app = createApp({
             updates.forEach(update => {
                 const targets = update?.id
                     ? activeUiTemplates.value.filter(template => template.id === update.id)
-                    : (update?.name
-                        ? activeUiTemplates.value.filter(template => template.name === update.name)
-                        : (activeUiTemplates.value.length === 1 ? [activeUiTemplates.value[0]] : []));
+                    : (activeUiTemplates.value.length === 1 ? [activeUiTemplates.value[0]] : []);
                 targets.forEach(template => {
                     const result = applyUiTemplateUpdateListToTemplate(template, [update], { model, turn, source: 'main_model' });
                     if (result.changed) {
@@ -3582,7 +3639,7 @@ const app = createApp({
             if (isAutoImageGenEnabled.value) return text; // 生图开启时保留
             return String(text)
                 .replace(/<image\b[^>]*>[\s\S]*?<\/image>/gi, '')
-                .replace(/image###([\s\S]*?)###/gi, '')
+                .replace(/image###([^\r\n]*?)(?:###|(?=\r?\n)|$)/gi, '')
                 .replace(/[ \t]+\n/g, '\n')
                 .replace(/\n{3,}/g, '\n\n')
                 .trim();
@@ -3648,8 +3705,7 @@ const app = createApp({
                     // 如果正则本身就在匹配代码块（如用户提供的 ```json ...```），则不应进行保护
                     // 增强保护：防止普通正则（通常带g）破坏 iframe 渲染内容（HTML文档、Script/Style块）
                     if (!/[<>]/.test(regexPattern) && !regexPattern.includes('```')) {
-                        // 匹配 完整的 HTML 文档, Script/Style 块, Markdown 代码块, 行内代码, HTML 标签, 或 <cot> 块
-                        // Updated to support <think> and erroneous <cot>...<cot> closing
+                        // 匹配完整的 HTML、脚本、代码块、标签以及 thinking/COT 块
                         result = cardUtils.transformUnprotectedText(
                             result,
                             part => part.replace(re, replacement)
@@ -3677,7 +3733,7 @@ const app = createApp({
             marked,
             DOMPurify
         });
-        watch(() => [settings.disableImages, regexScripts.value, user.name], () => {
+        watch(() => [settings.disableImages, settings.styleFilterEnabled, regexScripts.value, user.name], () => {
             clearMessageRenderCaches();
         }, { deep: true });
 
@@ -3738,14 +3794,6 @@ const app = createApp({
         };
 
         // API & Models
-        const getOpenAICompatUrlForBase = (baseUrl, endpoint) => {
-            const normalizedBase = String(baseUrl || '').replace(/\s+/g, '').replace(/\/+$/, '');
-            const bareBase = normalizedBase.replace(/[?#].*$/, '').replace(/\/+$/, '');
-            const versionedBase = bareBase.endsWith('/v1') ? bareBase : `${bareBase}/v1`;
-            return `${versionedBase}/${String(endpoint || '').replace(/^\/+/, '')}`;
-        };
-        const getApiEndpoint = (endpoint) => getOpenAICompatUrlForBase(settings.apiUrl, endpoint);
-
         // RP-Hub-Sync protocol-aware model aggregation v3
         const fetchModels = async (isManual = false) => {
             if (isManual) showToast('正在获取模型列表...', 'info');
@@ -3946,7 +3994,7 @@ const app = createApp({
                 return;
             }
             await checkConnectionStatus(apiStatus, apiLatency, 'API', signal => (
-                fetch(getApiEndpoint('models'), {
+            fetch(buildApiEndpoint(settings.apiUrl, 'models'), {
                     headers: { 'Authorization': `Bearer ${settings.apiKey}` },
                     signal
                 })
@@ -4049,6 +4097,9 @@ const app = createApp({
             chatImageSelectionEpoch++;
             pendingChatImages.value = [];
         };
+        const clearPendingCardInteraction = () => {
+            pendingCardInteraction.value = '';
+        };
         const removePendingChatImage = (id) => {
             pendingChatImages.value = pendingChatImages.value.filter(image => image.id !== id);
         };
@@ -4062,7 +4113,7 @@ const app = createApp({
             const requestStartedAt = Date.now();
             try {
                 const result = await requestChatCompletion({
-                    url: getApiEndpoint('chat/completions'),
+                url: buildApiEndpoint(settings.apiUrl, 'chat/completions'),
                     apiKey: settings.apiKey,
                     model: settings.visionModel,
                     temperature: 0.2,
@@ -4092,6 +4143,7 @@ const app = createApp({
                 recordApiUsage(result.usage, {
                     type: 'image_recognition',
                     model: settings.visionModel,
+                    isStream: false,
                     durationMs: Date.now() - requestStartedAt,
                     outputCharacters: description.length
                 });
@@ -4156,16 +4208,18 @@ const app = createApp({
         };
 
         const sendMessage = async () => {
-            if ((!userInput.value.trim() && pendingChatImages.value.length === 0) || isConversationBusy.value || isRecognizingImages.value) return;
+            if ((!userInput.value.trim() && pendingChatImages.value.length === 0 && !pendingCardInteraction.value) || isConversationBusy.value || isRecognizingImages.value) return;
             if (pendingChatImages.value.some(image => image.status !== 'ready')) {
                 showToast('请先移除识别失败的图片', 'warning');
                 return;
             }
 
             const content = userInput.value.trim();
+            const cardInteraction = pendingCardInteraction.value;
             const imageAttachments = pendingChatImages.value.map(({ dataUrl, description }) => ({ dataUrl, description }));
             const startTime = Date.now(); // Record click time
             userInput.value = '';
+            clearPendingCardInteraction();
             clearPendingChatImages();
 
             let finalContent = content;
@@ -4174,17 +4228,29 @@ const app = createApp({
                 sysInstruction.value = ''; // Auto clear after sending
             }
 
-            // Add user message locally with NAME
-            chatHistory.value.push({
-                role: 'user',
-                name: user.name,
-                content: finalContent,
-                shouldAnimate: true,
-                skipReveal: true,
-                isSelf: true,
-                avatar: user.avatar,
-                imageAttachments
-            });
+            if (cardInteraction) {
+                chatHistory.value.push({
+                    role: 'user',
+                    content: cardInteraction,
+                    isSelf: true,
+                    isTriggered: true,
+                    shouldAnimate: true,
+                    skipReveal: true
+                });
+            }
+            if (finalContent || imageAttachments.length) {
+                // Add user message locally with NAME
+                chatHistory.value.push({
+                    role: 'user',
+                    name: user.name,
+                    content: finalContent,
+                    shouldAnimate: true,
+                    skipReveal: true,
+                    isSelf: true,
+                    avatar: user.avatar,
+                    imageAttachments
+                });
+            }
             await nextTick();
 
             // Single player
@@ -4201,6 +4267,7 @@ const app = createApp({
         const clearChat = () => {
             confirmAction('确定要清空聊天记录吗？记忆也将一并清空，此操作无法撤销。', () => {
                 clearPendingChatImages();
+                clearPendingCardInteraction();
                 abortConversationBackgroundWork();
                 resetChatRenderWindow();
                 chatHistory.value = [];
@@ -4272,7 +4339,7 @@ const app = createApp({
                 const messageEl = chatContainer.value?.querySelector(`[data-chat-index="${index}"] .message-content-wrapper`);
                 const messageHeight = messageEl?.getBoundingClientRect?.().height || 0;
                 msg.isEditing_Message = true;
-                const cotMatch = msg.content.match(/<(think|cot)>[\s\S]*?(?:<\/\s*\1\s*>|<\s*\1\s*>|$)/i);
+                const cotMatch = msg.content.match(/<(thinking|think|cot)>[\s\S]*?(?:<\/\s*\1\s*>|<\s*\1\s*>|$)/i);
                 const uiTemplateUpdateMatch = findUiTemplateUpdateBlock(msg.content);
                 msg.originalCot = cotMatch ? cotMatch[0] : '';
                 msg.originalSys = parseCot(msg.content).sys;
@@ -4308,6 +4375,10 @@ const app = createApp({
                     finalContent = msg.originalCot + '\n\n' + finalContent;
                 }
                 msg.content = finalContent;
+                if (contentChanged) {
+                    delete msg.styleFilterHits;
+                    openStyleFilterMessageKey.value = '';
+                }
                 clearMessageEditState(msg);
                 if (!contentChanged) {
                     await saveChatHistoryNow();
@@ -4443,22 +4514,12 @@ const app = createApp({
                 const pendingTemplateUpdates = [];
 
                 const normalizeUiTemplateUpdates = (parsed, template) => {
-                    if (Array.isArray(parsed?.updates)) {
-                        return normalizeUiTemplateUpdateList(parsed, [template]);
-                    }
-                    if (Array.isArray(parsed)) {
-                        return [{ variables: parsed, reason: '' }];
-                    }
-                    if (!parsed || typeof parsed !== 'object') return [];
-                    if (Object.prototype.hasOwnProperty.call(parsed, 'variables')) {
-                        return [{ variables: parsed.variables, reason: String(parsed.reason || '').trim() }];
-                    }
-                    return [{ variables: parsed, reason: '' }];
+                    return normalizeUiTemplateUpdateList(parsed, [template]);
                 };
 
                 const applyTemplateUpdates = (template, updates, model) => {
                     updates.forEach(update => {
-                        const result = applyUiTemplateUpdateListToTemplate(template, [update], { model, turn, matchName: false });
+                        const result = applyUiTemplateUpdateListToTemplate(template, [update], { model, turn });
                         if (result.changed) {
                             changedFieldCount += result.fieldCount;
                             hasChanges = true;
@@ -4510,11 +4571,12 @@ const app = createApp({
                         const parsedResponse = apiAdapters.parseChatText(uiRequest.protocol, rawText);
                         if (!isCurrentRun()) return;
                         let content = parsedResponse.text || '';
-                        const parsed = parseUiTemplateUpdateJson(content);
+                        const parsed = parseUiTemplateUpdates(content);
                         const updates = normalizeUiTemplateUpdates(parsed, template);
                         recordApiUsage(parsedResponse.usage, {
                             type: 'ui_template',
                             model,
+                            isStream: false,
                             durationMs: Date.now() - requestStartedAt,
                             outputCharacters: content.length
                         });
@@ -4875,7 +4937,17 @@ const app = createApp({
                 defaultResultCount: ACTIVE_TOOL_DEFAULT_RESULT_COUNT
             });
         };
-        const usesThinkingCotTag = (model) => /(?:deepseek|glm)/i.test(String(model || ''));
+        const usesThinkingCotTag = (model) => /(?:deepseek|glm|kimi)/i.test(String(model || ''));
+        const getMessageThinkingText = (message, includeNativeReasoning = true) => {
+            const parts = includeNativeReasoning ? [String(message?.reasoning || '').trim()] : [];
+            const content = String(message?.content || '');
+            const thinkingPattern = /<(thinking|think|cot)>([\s\S]*?)(?:<\/\s*\1\s*>|<\s*\1\s*>|$)/gi;
+            for (const match of content.matchAll(thinkingPattern)) parts.push(String(match[2] || '').trim());
+            return [...new Set(parts)].filter(Boolean).join('\n\n');
+        };
+        const wrapAnalysis = (tag, text) => text
+            ? `<${tag}>\n${text}\n</${tag}>\n`
+            : '';
         const appendNextResponsePrompt = (messageList, { cotEnabled = false, useThinkingTag = false, writingStylePrompt = '' } = {}) => {
             const target = [...messageList].reverse().find(message => (
                 message?.role === 'user'
@@ -4888,11 +4960,10 @@ const app = createApp({
                 autoImageGenEnabled: isAutoImageGenEnabled.value,
                 cotEnabled,
                 imageGenCount: settings.imageGenCount,
+                memoryEnabled: memorySettings.enabled,
                 useThinkingTag,
                 writingStylePrompt,
-                uiTemplateEnabled: settings.uiTemplateEnabled
-                    && settings.uiTemplateMainModelAnalysis
-                    && activeUiTemplates.value.length > 0
+                uiTemplateEnabled: isUiTemplateAnalysisEnabled()
             });
             target.content = `${String(target.content || '').trimEnd()}\n\n${prompt}`;
         };
@@ -5072,16 +5143,40 @@ const app = createApp({
                 chatHistory.value[0].role === 'assistant' &&
                 chatHistory.value[0].content === currentCharacter.value.first_mes;
 
+            const useThinkingTag = usesThinkingCotTag(requestModel);
+            const retainedThinkingTag = useThinkingTag ? 'thinking' : 'cot';
+            const openingText = String(currentCharacter.value.first_mes || '').trim();
+            const openingSourceMessage = openingText
+                ? chatHistory.value.find(source => source?.role === 'assistant'
+                    && parseCot(source.content || '').main.trim() === openingText)
+                : null;
+            const openingThinking = cotPresets.length > 0
+                ? wrapAnalysis(retainedThinkingTag, BUILTIN_PROMPTS.buildOpeningAnalysisContent({
+                    memoryEnabled: memorySettings.enabled,
+                    uiTemplateEnabled: isUiTemplateAnalysisEnabled(),
+                    characterName: currentCharacter.value.name
+                }))
+                : '';
+
             // 如果当前历史记录的第一条是“总结”消息，则认为开场白已被总结包含，不再强制补录开场白
             if (!hasFirstMesInHistory && currentCharacter.value.first_mes) {
                 messages.push({
                     role: 'assistant',
                     name: currentCharacter.value.name,
-                    content: currentCharacter.value.first_mes
+                    content: `${openingThinking}${currentCharacter.value.first_mes}`
                 });
             }
 
             // 记忆压缩：一次总结替换旧 AI 消息；二次总结把对应五轮合成一条。
+            const recentThinkingByMessage = new Map();
+            if (cotPresets.length > 0) {
+                for (let index = chatHistory.value.length - 1; index >= 0 && recentThinkingByMessage.size < 2; index--) {
+                    const source = chatHistory.value[index];
+                    if (source?.role !== 'assistant' || source === openingSourceMessage) continue;
+                    const thinking = getMessageThinkingText(source, useThinkingTag);
+                    if (thinking) recentThinkingByMessage.set(source, thinking);
+                }
+            }
             let chatHistoryForContext = postprocessedChatHistory.map((message, index) => ({
                 ...message,
                 _contextFloor: index + 1
@@ -5215,9 +5310,12 @@ const app = createApp({
                         ? sourceIndexes.map(sourceIndex => chatHistory.value[sourceIndex]).filter(source => source && source.role === m.role)
                         : [m];
                     const cleanSourceContent = (source) => {
-                        // Remove CoT content from history messages before sending to AI.
+                        // Remove internal thinking/COT from history before sending, then restore only the retained recent blocks.
                         const parsedData = parseCot(source.content || '');
                         let content = stripDisabledImageGenContext(stripNextResponsePrompt(stripUiTemplateContextInjection(parsedData.main)));
+                        const recentThinking = source.role === 'assistant' ? recentThinkingByMessage.get(source) : '';
+                        if (recentThinking) content = `${wrapAnalysis(retainedThinkingTag, recentThinking)}${content}`;
+                        if (source === openingSourceMessage && openingThinking) content = `${openingThinking}${content}`;
                         if (source.role === 'user') content = appendMessageImageDescriptions(source, content);
                         if (settings.uiTemplateEnabled
                             && settings.uiTemplateMainModelAnalysis
@@ -5259,7 +5357,7 @@ const app = createApp({
                     .map(preset => preset.content
                         .replace(/^\s*<writing_style>\s*/i, '')
                         .replace(/\s*<\/writing_style>\s*$/i, ''))
-                .concat(/deepseek/i.test(requestModel) ? '正文最少800字。' : [])
+                .concat(/deepseek/i.test(requestModel) ? '正文最少700字。' : [])
                     .join('\n\n')
             });
 
@@ -5281,7 +5379,7 @@ const app = createApp({
                 messages,
                 worldInfoGroups: wiGroups,
                 vectorMemories: vectorMemoriesForContext,
-                vectorDepth: Number(memorySettings.defaultDepth) || MEMORY_VECTOR_DEFAULT_DEPTH,
+                vectorDepth: MEMORY_VECTOR_DEFAULT_DEPTH,
                 safeTargetLimit
             });
             messages = appendActiveToolReminderToLatestUserMessage(messages);
@@ -5380,13 +5478,37 @@ const app = createApp({
                 if (isContinuation) activeToolContinuationHasResponse.value = true;
             };
 
+            const nativeReasoningClosedMessages = new WeakSet();
+            const normalizeNativeReasoningBoundary = (message) => {
+                if (!message) return;
+                if (nativeReasoningClosedMessages.has(message)) return;
+                const reasoning = String(message.reasoning || '');
+                const closeMatch = reasoning.match(/<\/\s*(thinking|think|cot)\s*>/i);
+                if (!closeMatch) return;
+
+                const before = reasoning.slice(0, closeMatch.index)
+                    .replace(/<\s*(thinking|think|cot)\s*>/gi, '')
+                    .trim();
+                const after = reasoning.slice(closeMatch.index + closeMatch[0].length).trim();
+                message.reasoning = before;
+                if (after) {
+                    message.content = [String(message.content || '').trimEnd(), after]
+                        .filter(Boolean)
+                        .join('\n\n');
+                }
+                nativeReasoningClosedMessages.add(message);
+                isThinking.value = false;
+                collapseNativeReasoning(message);
+            };
+
             const appendAssistantReasoning = (message, text) => {
                 if (!message || !text) return;
-                if (continuationToolCall && continuingAssistantMessage && message.id === continuingAssistantMessage.id) {
-                    appendAssistantText(message, 'reasoning', text);
+                if (nativeReasoningClosedMessages.has(message)) {
+                    appendAssistantText(message, 'content', text);
                     return;
                 }
                 appendAssistantText(message, 'reasoning', text);
+                normalizeNativeReasoningBoundary(message);
             };
 
             const createAssistantMessage = (content = '', reasoning = '') => reactive({
@@ -5406,6 +5528,7 @@ const app = createApp({
                 if (assistantMessage) return assistantMessage;
                 if (continuingAssistantMessage) {
                     assistantMessage = prepareAssistantMessageForAppend(continuingAssistantMessage);
+                    normalizeNativeReasoningBoundary(assistantMessage);
                     if (reasoning) appendAssistantReasoning(assistantMessage, reasoning);
                     if (content) appendAssistantText(assistantMessage, 'content', content);
                     isReceiving.value = true;
@@ -5413,6 +5536,7 @@ const app = createApp({
                 }
 
                 assistantMessage = createAssistantMessage(content, reasoning);
+                normalizeNativeReasoningBoundary(assistantMessage);
                 promoteActiveToolCallsFromAssistant(assistantMessage);
                 chatHistory.value.push(assistantMessage);
                 isReceiving.value = true;
@@ -5577,6 +5701,7 @@ const app = createApp({
                 recordApiUsage(responseUsage, {
                     type: activeToolDepth > 0 ? 'tool_continuation' : 'chat',
                     model: requestModel,
+                    isStream: responseResult.isStream,
                     durationMs: duration,
                     outputCharacters
                 });
@@ -5625,7 +5750,21 @@ const app = createApp({
                     chatHistory.value.push({ role: 'system', name: currentCharacter.value.name, content: error.message });
                 }
             } finally {
-                if (assistantMessage?.content) filterBlockedStyleText(assistantMessage.content, { log: true });
+                if (assistantMessage?.content) {
+                    const styleFilterHits = [];
+                    assistantMessage.content = filterBlockedStyleText(assistantMessage.content, {
+                        log: true,
+                        collect: styleFilterHits
+                    });
+                    const previousHits = continuingAssistantMessage && Array.isArray(assistantMessage.styleFilterHits)
+                        ? assistantMessage.styleFilterHits
+                        : [];
+                    const combinedHits = [...previousHits, ...styleFilterHits]
+                        .map(normalizeStyleFilterHit)
+                        .filter(Boolean);
+                    if (combinedHits.length) assistantMessage.styleFilterHits = combinedHits;
+                    else delete assistantMessage.styleFilterHits;
+                }
                 if (continuationToolCall && continuationToolCall.status === 'continuing') {
                     continuationToolCall.status = 'done';
                 }
@@ -5904,6 +6043,7 @@ const app = createApp({
             recordApiUsage(parsedSummary.usage, {
                 type: 'summary',
                 model,
+                isStream: false,
                 durationMs: Date.now() - requestStartedAt,
                 outputCharacters: summary.length
             });
@@ -5911,15 +6051,11 @@ const app = createApp({
         };
 
         const requestClassicMemorySummary = async (job, signal) => {
-            const summaryLengthRequirement = SUMMARY_LENGTH_REQUIREMENTS[memorySettings.summaryLevel]
-                || SUMMARY_LENGTH_REQUIREMENTS[SUMMARY_LEVEL_DEFAULT];
-
             const requestMessages = [{
                 role: 'system',
                 content: BUILTIN_PROMPTS.buildClassicSummarySystemPrompt({
                     userName: user.name,
-                    characterName: currentCharacter.value?.name,
-                    lengthRequirement: summaryLengthRequirement
+                    characterName: currentCharacter.value?.name
                 })
             }];
 
@@ -5941,14 +6077,11 @@ const app = createApp({
             const ordered = [...group].sort((a, b) => Number(a.turn) - Number(b.turn));
             const startTurn = Number(ordered[0]?.turn) || 1;
             const endTurn = Number(ordered[ordered.length - 1]?.turn) || startTurn;
-            const lengthRequirement = SUMMARY_LENGTH_REQUIREMENTS[memorySettings.summaryLevel]
-                || SUMMARY_LENGTH_REQUIREMENTS[SUMMARY_LEVEL_DEFAULT];
             const requestMessages = [{
                 role: 'system',
                 content: BUILTIN_PROMPTS.buildClassicSecondarySummaryPrompt({
                     userName: user.name,
                     characterName: currentCharacter.value?.name,
-                    lengthRequirement,
                     startTurn,
                     endTurn
                 })
@@ -6328,6 +6461,7 @@ const app = createApp({
             recordApiUsage(parsedEmbedding.usage, {
                 type: 'embedding',
                 model,
+                isStream: false,
                 durationMs: Date.now() - requestStartedAt,
                 outputCharacters: 0
             });
@@ -6513,8 +6647,7 @@ const app = createApp({
         );
 
         const passesMemorySimilarityThreshold = (score) => {
-            const threshold = Number(memorySettings.similarityThreshold) || MEMORY_VECTOR_DEFAULT_SIMILARITY;
-            return score >= threshold / 100;
+            return score >= MEMORY_VECTOR_SIMILARITY_THRESHOLD / 100;
         };
 
         const getRecentUserMemoryQueries = (limit = 3) => {
@@ -8601,7 +8734,7 @@ const app = createApp({
             const imageRequestUrl = `${baseUrl}/generate?tag=$1&token=${encodeURIComponent(imageGenToken)}&model=${settings.imageModel}&artist=${encodedTargetArtists}&size=${settings.imageSize}&steps=40&scale=6&cfg=0&sampler=k_dpmpp_2m_sde&negative={{{{bad anatomy}}}},{bad feet},bad hands,{{{bad proportions}}},{blurry},cloned face,cropped,{{{deformed}}},{{{disfigured}}},error,{{{extra arms}}},{extra digit},{{{extra legs}}},extra limbs,{{extra limbs}},{fewer digits},{{{fused fingers}}},gross proportions,ink eyes,ink hair,jpeg artifacts,{{{{long neck}}}},low quality,{malformed limbs},{{missing arms}},{missing fingers}},{{missing legs}},{{{more than 2 nipples}}},mutated hands,{{{mutation}}},normal quality,owres,{{poorly drawn face}},{{poorly drawn hands}},reen eyes,signature,text,{{too many fingers}},{{{ugly}}},username,uta,watermark,worst quality,{{{more than 2 legs}}},awkward hand sign,weird hand gesture,contorted hand,unnatural finger pose,deformed hand gesture,{shaka},{hang loose},{{rock on}},{shaka sign}&nocache=0&noise_schedule=karras`;
             const imageGenRegexContent = {
                 name: imageGenRegexName,
-                regex: '/image###([\\s\\S]*?)###/g',
+                regex: '/image###([^\\r\\n]*?)(?:###|(?=\\r?\\n)|$)/g',
             replacement: `<div class="generated-image-card is-generating" data-image-request="${imageRequestUrl}" style="width:100%;height:auto;max-width:100%;box-sizing:border-box;padding:2px;border:1px solid rgba(255,255,255,.58);background:transparent;position:relative;border-radius:12px;overflow:hidden;display:flex;justify-content:center;align-items:center;box-shadow:0 4px 14px rgba(148,163,184,.06)"><img alt="" style="max-width:100%;height:100%;width:100%;display:block;object-fit:contain;border-radius:9px;transition:transform .3s ease"><div class="generated-image-progress" aria-live="polite"><svg class="generated-image-spinner" viewBox="0 0 50 50" aria-hidden="true"><circle class="generated-image-spinner-path" cx="25" cy="25" r="20" fill="none" stroke-width="2"></circle></svg><span class="generated-image-progress-label">等待生成</span><span class="generated-image-progress-track"><i class="generated-image-progress-bar"></i></span></div><button type="button" class="generated-image-reroll" title="重新生成图片" aria-label="重新生成图片"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg></button></div>`,
                 placement: [2],
                 markdownOnly: true,
@@ -8670,6 +8803,14 @@ const app = createApp({
                 }
                 if (msg.role === 'assistant' && msg.isSummaryOpen === undefined && hasThinkingOrTools(msg)) {
                     msg.isSummaryOpen = false;
+                }
+                if (msg.role === 'assistant' && Array.isArray(msg.styleFilterHits)) {
+                    msg.styleFilterHits = msg.styleFilterHits
+                        .map(normalizeStyleFilterHit)
+                        .filter(Boolean);
+                    if (!msg.styleFilterHits.length) delete msg.styleFilterHits;
+                } else {
+                    delete msg.styleFilterHits;
                 }
                 return msg;
             });
@@ -9064,6 +9205,7 @@ const app = createApp({
             const target = storyBranches.value.find(branch => branch.id === branchId);
             if (!char?.uuid || !target || branchId === activeStoryBranchId.value || storyBranchSwitching.value) return;
             clearPendingChatImages();
+            clearPendingCardInteraction();
             storyBranchSwitching.value = true;
             try {
                 if (!await saveCurrentStoryBranchState()) return;
@@ -9165,6 +9307,7 @@ const app = createApp({
                 return;
             }
             clearPendingChatImages();
+            clearPendingCardInteraction();
             const switchEpoch = ++_characterSwitchEpoch;
             const isLatestSwitch = () => switchEpoch === _characterSwitchEpoch;
             switchingCharacterIndex.value = index;
@@ -9690,23 +9833,17 @@ const app = createApp({
 
         // Expose triggerSlash for character cards (Defined early)
         window.triggerSlash = async (text) => {
-            if (!text) return;
+            const command = String(text || '').trim();
+            if (!command) return;
 
-            if (isGenerating.value) {
+            if (isConversationBusy.value) {
                 showToast('正在生成中，请稍后...', 'warning');
                 return;
             }
 
-            const startTime = Date.now(); // Record trigger time
-
-            // Add user message with explicit reactivity update
-            const newMessage = { role: 'user', content: text, isSelf: true, isTriggered: true, shouldAnimate: true, skipReveal: true };
-            // Push and force update to ensure v-if picks up the new property
-            chatHistory.value = [...chatHistory.value, newMessage];
-
+            pendingCardInteraction.value = command;
             await nextTick();
-
-            await generateResponse(startTime);
+            inputBox.value?.focus();
         };
 
         // Lifecycle
@@ -9773,6 +9910,9 @@ const app = createApp({
             // 1.7.2 Enforce Default Preset (人格内核)
             syncBuiltinPreset(BUILTIN_PRESETS.personalityCore);
 
+            // 1.7.3 Enforce Default Preset (去User中心化)
+            syncBuiltinPreset(BUILTIN_PRESETS.deUserCentric);
+
             // 1.7.5 Enforce Default Preset (文风（抗八股）)
             syncBuiltinPreset(BUILTIN_PRESETS.writingStyle);
 
@@ -9802,25 +9942,42 @@ const app = createApp({
             // 1.10 Enforce Default Preset (COT)
             const cotPresetName = 'COT';
             const syncCotPresetContent = () => {
+                const useThinkingOpening = usesThinkingCotTag(settings.model);
+                const uiTemplateAnalysisEnabled = isUiTemplateAnalysisEnabled();
                 const cotPresetContent = buildCotPresetContent({
                     memoryEnabled: memorySettings.enabled,
-                    uiTemplateAnalysisEnabled: settings.uiTemplateEnabled
-                        && settings.uiTemplateMainModelAnalysis
-                        && activeUiTemplates.value.length > 0,
-                    useThinkingOpening: usesThinkingCotTag(settings.model)
+                    uiTemplateAnalysisEnabled,
+                    useThinkingOpening
                 });
-                const existingCotPreset = presets.value.find(p => p.name === cotPresetName);
+                let existingCotPreset = presets.value.find(p => p.name === cotPresetName);
                 if (!existingCotPreset) {
                     presets.value.push({
                         name: cotPresetName,
                         content: cotPresetContent,
                         enabled: true
                     });
-                    return;
-                }
-                if (existingCotPreset.content !== cotPresetContent) {
+                    existingCotPreset = presets.value.find(p => p.name === cotPresetName);
+                } else if (existingCotPreset.content !== cotPresetContent) {
                     existingCotPreset.content = cotPresetContent;
                 }
+
+                const prefillEnabled = existingCotPreset?.enabled !== false;
+                BUILTIN_CORE_PRESETS.forEach(preset => {
+                    const prefillPhase = preset.name === '破限预注入 · AI 1' ? 1
+                        : preset.name === '破限预注入 · AI 2' ? 2
+                            : 0;
+                    if (!prefillPhase) return;
+                    const existingPreset = presets.value.find(item => item.name === preset.name);
+                    if (!existingPreset) return;
+                    existingPreset.content = buildCotPresetContent({
+                        memoryEnabled: memorySettings.enabled,
+                        uiTemplateAnalysisEnabled,
+                        useThinkingOpening,
+                        prefillPhase,
+                        prefillEnabled,
+                        prefillBaseContent: preset.content
+                    });
+                });
             };
             syncCotPresetContent();
             watch([
@@ -9828,7 +9985,8 @@ const app = createApp({
                 () => settings.uiTemplateEnabled,
                 () => settings.uiTemplateMainModelAnalysis,
                 () => activeUiTemplates.value.length,
-                () => settings.model
+                () => settings.model,
+                () => presets.value.find(preset => preset.name === cotPresetName)?.enabled
             ], syncCotPresetContent);
             removeLegacyUserRegex();
 
@@ -9947,6 +10105,13 @@ const app = createApp({
         const processMainContent = (mainText, isGeneratingState) => {
             mainText = stripUiTemplateUpdateBlock(mainText);
             if (!isGeneratingState) return { text: mainText, showSpinner: false };
+            const imageStart = mainText.lastIndexOf('image###');
+            if (imageStart !== -1) {
+                const imageTail = mainText.slice(imageStart + 'image###'.length);
+                if (!imageTail.includes('###') && !/[\r\n]/.test(imageTail)) {
+                    mainText = mainText.slice(0, imageStart);
+                }
+            }
             const patterns = ['```html', '```vue', '<!DOCTYPE', '<div', '<style'];
             let earliestIndex = -1;
             for (const p of patterns) {
@@ -10138,15 +10303,17 @@ const app = createApp({
             tokenUsageHistory, tokenUsagePage, tokenUsagePageCount, tokenUsageFilter, tokenUsageTimeFilter,
             showTokenUsageTimeFilter, tokenUsageTimeFilterOptions, tokenUsageTimeFilterLabel,
             filteredTokenUsageHistory, tokenUsageStats, displayedTokenUsageHistory,
+            latestMainTokenUsage, formatLatestTokenCount, formatLatestUsageCost,
             getUncachedInputTokens, formatTokenCount, formatTokenAggregate, formatTokenUsageTime, getTokenUsageTypeLabel, clearTokenUsageHistory,
             storageStats, refreshStorageStats, cleanupUnusedStorage, formatStorageSize,
             showCharacterExportModal, openCharacterExportModal, confirmCharacterExport, // Character Export Modal
             updateModalRef, latestUpdateConfig,
             showConfirmModal, confirmMessage, modelMode, chatModelSlots, selectChatModelSlot, reasoningEffortSlider, reasoningEffortLabel, showNoMemoryNeededModal, // Export for template
-            isGenerating, isRemoteGenerating, remoteEstimatedTime, isReceiving, isThinking, hasActiveToolInlineWork, isConversationBusy, activeToolContinuationMessageId, activeToolContinuationHasResponse, userInput, pendingChatImages, pendingChatImageReadCount, isRecognizingImages, requestChatImageSelection, handleChatImageSelection, removePendingChatImage, modelSearchQuery, activeModelTag, modelTags, characterSearchQuery, filteredModels, filteredCharacters,
+            isGenerating, isRemoteGenerating, remoteEstimatedTime, isReceiving, isThinking, hasActiveToolInlineWork, isConversationBusy, activeToolContinuationMessageId, activeToolContinuationHasResponse, userInput, pendingCardInteraction, clearPendingCardInteraction, pendingChatImages, pendingChatImageReadCount, isRecognizingImages, requestChatImageSelection, handleChatImageSelection, removePendingChatImage, modelSearchQuery, activeModelTag, modelTags, characterSearchQuery, filteredModels, filteredCharacters,
             user, settings, apiProviderOptions, selectedApiProvider, selectedProviderModes, chatProtocolOptions, embeddingProtocolOptions, isCustomApiProvider, customApiProviderOptions, showApiProviderSelector, selectApiProvider, addCustomApiProvider, updateSelectedCustomApiProvider, updateSelectedProviderMode, deleteCustomApiProvider, getProviderDisplayName, migrateLegacyMemoryProviders, characters, currentCharacter, currentCharacterIndex, switchingCharacterIndex, chatHistory, displayedChatMessages, handleChatScroll, presets, presetRoleOptions, fontFamilyOptions, fontSizeOptions, availableImageStyleOptions, imageModelOptions, imageSizeOptions, imageGenCountOptions, scopeOptions, uiTemplatePlacementOptions, worldInfoPositionOptions, getPresetRoleLabel, getPresetRoleDisplayLabel, getPresetRoleBadgeClass, regexScripts, worldInfo,
             activeTools, activeToolAggressivenessOptions: ACTIVE_TOOL_AGGRESSIVENESS_OPTIONS, editingActiveTool, normalizeActiveTools, isWebActiveTool, getActiveToolDisplayDescription, getActiveToolResultCountMin, getActiveToolResultCountMax,
             getToolCallModeText, hasThinkingOrTools, isMessageThinkingOrRunning, isThinkingSummaryOpen, toggleThinkingSummary, markThinkingSummaryDetailOpened, getTimelineSteps,
+            isStyleFilterDetailsOpen, toggleStyleFilterDetails, getStyleFilterHitSegments,
             chatRoundStats, conversationBodyLength, summaryCompressedBodyLength, summaryCompressionRate,
             editingCharacter, editingPreset, editingUiTemplate, toasts, chatContainer, isChatFullscreen, isMobileKeyboardOpen, inputBox, messageElements,
             isGeneratorLoading, generatorUrl, onGeneratorLoad, // Generator exports

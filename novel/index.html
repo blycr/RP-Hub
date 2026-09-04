@@ -12,6 +12,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Marked for Markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="../assets/js/api-utils.js"></script>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1144,6 +1145,7 @@
 
    <script>
         const { createApp, ref, computed, onMounted, nextTick, watch, onUnmounted } = Vue;
+        const { buildApiEndpoint } = window.RPHubApiUtils;
 
         createApp({
             setup() {
@@ -1337,6 +1339,88 @@
                         };
                     }
                 };
+
+                const getApiEndpoint = (path) => {
+                    const baseUrl = String(settings.value.apiUrl || '').replace(/\/+$/, '');
+                    return `${baseUrl}${baseUrl.toLowerCase().endsWith('/v1') ? '' : '/v1'}/${path}`;
+                };
+                // RP-Hub-Sync novel API adapter routes v1
+                const apiAdapters = window.RPHubApiAdapters;
+                if (!apiAdapters || typeof apiAdapters.buildChatRequest !== 'function') {
+                    throw new Error('API 协议适配器未加载');
+                }
+                const getNovelChatProtocol = () => {
+                    const fromSettings = String(settings.value.chatProtocol || '').trim();
+                    if (fromSettings) return fromSettings;
+                    const provider = selectedApiProvider.value;
+                    return String(provider?.chatProtocol || apiAdapters.CHAT_PROTOCOL_OPENAI_CHAT).trim()
+                        || apiAdapters.CHAT_PROTOCOL_OPENAI_CHAT;
+                };
+                const requestNovelChat = ({ model, messages, stream, temperature, signal }) => {
+                    if (!String(settings.value.apiUrl || '').trim()) throw new Error('请先同步并选择已配置的 RP-Hub 供应商');
+                    if (!String(settings.value.apiKey || '').trim()) throw new Error('请先同步并选择已配置的 RP-Hub 供应商');
+                    if (!String(model || '').trim()) throw new Error('请先选择模型');
+                    const request = apiAdapters.buildChatRequest({
+                        protocol: getNovelChatProtocol(),
+                        baseUrl: settings.value.apiUrl,
+                        apiKey: settings.value.apiKey,
+                        model,
+                        messages,
+                        stream: !!stream,
+                        temperature,
+                        signal,
+                    });
+                    return { request, fetchPromise: fetch(request.url, request.init) };
+                };
+                const readNovelStream = async (response, protocol, onDelta) => {
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+                    let fullText = '';
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop() || '';
+                        for (const line of lines) {
+                            const dataStr = apiAdapters.parseSseDataLine(line);
+                            if (dataStr === null || dataStr === '' || dataStr === '[DONE]') continue;
+                            try {
+                                const payload = JSON.parse(dataStr);
+                                const streamEvent = apiAdapters.parseChatStreamEvent(protocol, payload);
+                                if (streamEvent.error) throw new Error(streamEvent.error);
+                                const delta = streamEvent.textDelta || '';
+                                if (delta) {
+                                    fullText += delta;
+                                    if (onDelta) onDelta(fullText, delta);
+                                }
+                            } catch (error) {
+                                if (error && error.message && !/JSON|Unexpected/.test(error.message)) throw error;
+                            }
+                        }
+                    }
+                    if (buffer.trim()) {
+                        const dataStr = apiAdapters.parseSseDataLine(buffer);
+                        if (dataStr && dataStr !== '[DONE]') {
+                            try {
+                                const payload = JSON.parse(dataStr);
+                                const streamEvent = apiAdapters.parseChatStreamEvent(protocol, payload);
+                                if (streamEvent.error) throw new Error(streamEvent.error);
+                                const delta = streamEvent.textDelta || '';
+                                if (delta) {
+                                    fullText += delta;
+                                    if (onDelta) onDelta(fullText, delta);
+                                }
+                            } catch (error) {
+                                if (error && error.message && !/JSON|Unexpected/.test(error.message)) throw error;
+                            }
+                        }
+                    }
+                    return fullText;
+                };
+
+
 
                 const readSseContent = async (response, onContent) => {
                     const reader = response.body.getReader();
@@ -2250,88 +2334,6 @@
                         transaction.onabort = () => reject(transaction.error);
                     });
                 };
-                const getApiEndpoint = (path) => {
-                    const baseUrl = String(settings.value.apiUrl || '').replace(/\/+$/, '');
-                    return `${baseUrl}${baseUrl.toLowerCase().endsWith('/v1') ? '' : '/v1'}/${path}`;
-                };
-                // RP-Hub-Sync novel API adapter routes v1
-                const apiAdapters = window.RPHubApiAdapters;
-                if (!apiAdapters || typeof apiAdapters.buildChatRequest !== 'function') {
-                    throw new Error('API 协议适配器未加载');
-                }
-                const getNovelChatProtocol = () => {
-                    const fromSettings = String(settings.value.chatProtocol || '').trim();
-                    if (fromSettings) return fromSettings;
-                    const provider = selectedApiProvider.value;
-                    return String(provider?.chatProtocol || apiAdapters.CHAT_PROTOCOL_OPENAI_CHAT).trim()
-                        || apiAdapters.CHAT_PROTOCOL_OPENAI_CHAT;
-                };
-                const requestNovelChat = ({ model, messages, stream, temperature, signal }) => {
-                    if (!String(settings.value.apiUrl || '').trim()) throw new Error('请先同步并选择已配置的 RP-Hub 供应商');
-                    if (!String(settings.value.apiKey || '').trim()) throw new Error('请先同步并选择已配置的 RP-Hub 供应商');
-                    if (!String(model || '').trim()) throw new Error('请先选择模型');
-                    const request = apiAdapters.buildChatRequest({
-                        protocol: getNovelChatProtocol(),
-                        baseUrl: settings.value.apiUrl,
-                        apiKey: settings.value.apiKey,
-                        model,
-                        messages,
-                        stream: !!stream,
-                        temperature,
-                        signal,
-                    });
-                    return { request, fetchPromise: fetch(request.url, request.init) };
-                };
-                const readNovelStream = async (response, protocol, onDelta) => {
-                    const reader = response.body.getReader();
-                    const decoder = new TextDecoder();
-                    let buffer = '';
-                    let fullText = '';
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-                        buffer += decoder.decode(value, { stream: true });
-                        const lines = buffer.split('\n');
-                        buffer = lines.pop() || '';
-                        for (const line of lines) {
-                            const dataStr = apiAdapters.parseSseDataLine(line);
-                            if (dataStr === null || dataStr === '' || dataStr === '[DONE]') continue;
-                            try {
-                                const payload = JSON.parse(dataStr);
-                                const streamEvent = apiAdapters.parseChatStreamEvent(protocol, payload);
-                                if (streamEvent.error) throw new Error(streamEvent.error);
-                                const delta = streamEvent.textDelta || '';
-                                if (delta) {
-                                    fullText += delta;
-                                    if (onDelta) onDelta(fullText, delta);
-                                }
-                            } catch (error) {
-                                if (error && error.message && !/JSON|Unexpected/.test(error.message)) throw error;
-                            }
-                        }
-                    }
-                    if (buffer.trim()) {
-                        const dataStr = apiAdapters.parseSseDataLine(buffer);
-                        if (dataStr && dataStr !== '[DONE]') {
-                            try {
-                                const payload = JSON.parse(dataStr);
-                                const streamEvent = apiAdapters.parseChatStreamEvent(protocol, payload);
-                                if (streamEvent.error) throw new Error(streamEvent.error);
-                                const delta = streamEvent.textDelta || '';
-                                if (delta) {
-                                    fullText += delta;
-                                    if (onDelta) onDelta(fullText, delta);
-                                }
-                            } catch (error) {
-                                if (error && error.message && !/JSON|Unexpected/.test(error.message)) throw error;
-                            }
-                        }
-                    }
-                    return fullText;
-                };
-
-
-
                 const readRPHubSettings = () => new Promise((resolve, reject) => {
                     let request;
                     try {
@@ -2454,7 +2456,7 @@
                     }
                     isLoadingModels.value = true;
                     try {
-                        const response = await fetch(getApiEndpoint('models'), {
+                        const response = await fetch(buildApiEndpoint(settings.value.apiUrl, 'models'), {
                             headers: { 'Authorization': `Bearer ${settings.value.apiKey}` }
                         });
                         if (!response.ok) throw new Error(`HTTP ${response.status}`);
