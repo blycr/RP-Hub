@@ -280,6 +280,11 @@
         if (changed.reduce((sum, file) => sum + file.base64.length, 0) > 90 * 1024 * 1024) {
             throw new Error('本次上传超过 90 MiB，请先整理大数据');
         }
+        const destination = `${formValue(form, 'owner').trim()}/${formValue(form, 'repo').trim()}@${formValue(form, 'branch').trim()}`;
+        if (!confirm(`即将向 ${destination} 写入 ${changed.length - 1} 个加密分片并删除 ${stale.length} 个旧分片。确定继续吗？`)) {
+            status('已取消推送');
+            return;
+        }
         status(`正在原子提交 ${changed.length - 1} 个分片…`);
         await client.pushAtomic(changed, stale, `RP-Hub native sync ${new Date().toISOString()}`);
         status('推送完成，已加密保存到 GitHub');
@@ -329,7 +334,7 @@
                 <form class="settings-card__body space-y-4" autocomplete="off">
                     <p class="text-sm text-gray-600">凭据仅在本页输入框内使用。拉取前会校验全部文件并在本机保存完整备份；已有用户脚本仍可继续使用。</p>
                     <div><label class="settings-label">GitHub 用户名</label><input name="owner" class="settings-control" required value="blycr"></div>
-                    <div><label class="settings-label">私有数据仓库</label><input name="repo" class="settings-control" required value="RP-Hub-Sync"></div>
+                    <div><label class="settings-label">私有数据仓库</label><input name="repo" class="settings-control" required placeholder="先填写测试仓库"></div>
                     <div><label class="settings-label">分支</label><input name="branch" class="settings-control" required value="main"></div>
                     <div><label class="settings-label">GitHub Token</label><input name="token" type="password" class="settings-control" required autocomplete="new-password"></div>
                     <div><label class="settings-label">同步口令</label><input name="passphrase" type="password" class="settings-control" required autocomplete="new-password"></div>
