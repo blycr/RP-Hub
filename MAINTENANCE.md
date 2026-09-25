@@ -2,6 +2,8 @@
 
 本仓库是基于 [`STA1N156/RP-Hub`](https://github.com/STA1N156/RP-Hub) 的**独立历史产品预览仓库**，不属于上游 fork 网络。当前 `https://rp.blycr.xyz/` 仍由旧 `blycr/RP-Hub` 仓库发布；本仓库尚未绑定正式域名。`assets/js/app.js`、`assets/js/api-utils.js` 等是本站的实际产品代码。过渡期的补丁源、用户脚本和协调测试位于私有 [`blycr/RP-Hub-Sync`](https://github.com/blycr/RP-Hub-Sync)。
 
+GitHub Pages 预览地址为 `https://blycr.github.io/RP-Hub-Next/`；Pages 构建已完成，静态首页返回 HTTP 200。网页运行、跨设备恢复和模型真实流式调用仍需验收。
+
 ## 三个仓库的边界
 
 | 仓库 | 职责 |
