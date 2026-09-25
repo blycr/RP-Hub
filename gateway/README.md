@@ -14,6 +14,6 @@ Worker 只接受 `/proxy` 上的 `GET /v1/models` 和 `POST /v1/chat/completions
 
 预览 Worker 已部署到 `https://rphub-gateway-preview.qixmz.workers.dev/proxy`，部署命令在上句基础上增加 `--name rphub-gateway-preview`。当前站点 Origin 为 `https://rp.blycr.xyz`、`https://blycr.github.io`；测试用供应商 Origin 为 `https://api.openai.com`、`https://cdn.sta1n.cn`。这些值和网关口令配置在 Cloudflare Secret 中，不在本仓库。实际部署通过了预检、错误来源/口令/目标拒绝和 OpenAI 四类端点的无效 Key 转发测试；尚未使用真实模型 Key 或验证真实 SSE。`cdn.sta1n.cn` 对 Worker 出站的无效 Key 测试返回了非 JSON/SSE 响应，网关按设计拒绝；该供应商的浏览器预检允许直连。
 
-**预览 Worker 已部署，本站设置页已有可选接线；正式域名和旧线上主分支尚未切换。** 真实 SSE、供应商兼容性和隐私检查完成前，不得退役现有浏览器传输。站点中新增供应商不等于网关自动批准该供应商；允许 CORS 的供应商仍可由浏览器直连。生产还应设置 Cloudflare 限流规则。
+**预览 Worker 已部署，本站设置页已有可选接线；正式域名和旧线上主分支尚未切换。** 隔离浏览器的模型列表请求已通过客户端路由到预览 Worker；无效测试口令返回预期 401，跨域预检通过。真实 SSE、供应商兼容性和隐私检查完成前，不得退役现有浏览器传输。站点中新增供应商不等于网关自动批准该供应商；允许 CORS 的供应商仍可由浏览器直连。生产还应设置 Cloudflare 限流规则。
 
 本地运行 `node --test gateway/worker.test.mjs`。真实部署还需用浏览器 origin、供应商凭据和长时间流式响应完成端到端验证。
