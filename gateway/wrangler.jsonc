@@ -1,0 +1,6 @@
+{
+  "name": "rphub-gateway",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-09-24",
+  "workers_dev": true
+}
