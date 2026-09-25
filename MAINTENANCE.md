@@ -2,7 +2,7 @@
 
 本仓库是基于 [`STA1N156/RP-Hub`](https://github.com/STA1N156/RP-Hub) 的**独立历史产品预览仓库**，不属于上游 fork 网络。当前 `https://rp.blycr.xyz/` 仍由旧 `blycr/RP-Hub` 仓库发布；本仓库尚未绑定正式域名。`assets/js/app.js`、`assets/js/api-utils.js` 等是本站的实际产品代码。过渡期的补丁源、用户脚本和协调测试位于私有 [`blycr/RP-Hub-Sync`](https://github.com/blycr/RP-Hub-Sync)。
 
-GitHub Pages 预览地址为 `https://blycr.github.io/RP-Hub-Next/`；Pages 构建已完成，静态首页返回 HTTP 200。网页运行、跨设备恢复和模型真实流式调用仍需验收。
+GitHub Pages 预览地址为 `https://blycr.github.io/RP-Hub-Next/`；Pages 构建已完成，隔离 Chrome 验证网页与设置面板正常加载。现有用户数据、实际设备和模型真实流式调用仍需验收。
 
 ## 三个仓库的边界
 
@@ -40,9 +40,9 @@ GitHub Pages 预览地址为 `https://blycr.github.io/RP-Hub-Next/`；Pages 构�
 
 ### 请求服务与原生同步迁移（本站预览）
 
-`gateway/` 保存已部署到独立 Cloudflare 预览地址的受控模型请求服务；本站设置页已有可选网关接线。`assets/js/rphub-sync-github.js`、`rphub-sync-crypto.js`、`rphub-sync-snapshot.js` 和 `rphub-sync-native.js` 组成原生同步预览面板，包含旧单文件快照兼容、加密分片、完整校验、本地备份和失败回滚。GitHub Token 与同步口令只在当前页面输入，不进入站点设置或远端快照。正式切换前仍需在浏览器里验证真实 SSE、IndexedDB 与工坊写入、跨设备恢复和大数据量；旧线上仓库仍使用现有同步脚本。
+`gateway/` 保存已部署到独立 Cloudflare 预览地址的受控模型请求服务；本站设置页已有可选网关接线。`assets/js/rphub-sync-github.js`、`rphub-sync-crypto.js`、`rphub-sync-snapshot.js` 和 `rphub-sync-native.js` 组成原生同步预览面板，包含旧单文件快照兼容、加密分片、完整校验、本地备份和失败回滚。GitHub Token 与同步口令只在当前页面输入，不进入站点设置或远端快照。隔离浏览器中的 IndexedDB、角色工坊、恢复备份及真实 GitHub 临时分支推拉已通过；正式切换前仍需验证真实模型 SSE、现有用户数据、实际设备和大数据量。旧线上仓库仍使用现有同步脚本。
 
-GitHub 私有仓库的带鉴权读取已用 `https://rp.blycr.xyz` Origin 验证返回允许跨域响应；写入和恢复仍需完整端到端验证。新客户端把写入限制在 `rp-hub-sync/`，使用非强制的单次提交更新。加解密测试使用旧脚本生成的公开示例密文，不含真实同步数据；分片测试使用虚构角色卡和 API Key。请求网关采用 Cloudflare Worker，只接受明确批准的 HTTPS 供应商目标，不作为任意 URL 代理；部署方法和鉴权边界见 [`gateway/README.md`](gateway/README.md)。本地契约测试可运行 `node --test gateway/worker.test.mjs tests/*.test.js`。
+GitHub 私有仓库的带鉴权读取和写入跨域预检已通过；隔离浏览器通过私有仓库一次性分支完成真实加密推送和拉取，测试分支已删除。现有用户快照的恢复仍需端到端验证。新客户端把写入限制在 `rp-hub-sync/`，使用非强制的单次提交更新。加解密测试使用旧脚本生成的公开示例密文，不含真实同步数据；分片测试使用虚构角色卡和 API Key。请求网关采用 Cloudflare Worker，只接受明确批准的 HTTPS 供应商目标，不作为任意 URL 代理；部署方法和鉴权边界见 [`gateway/README.md`](gateway/README.md)。本地契约测试可运行 `node --test gateway/worker.test.mjs tests/*.test.js`。
 
 - 本仓库不含上游自动合并工作流。先在本地审查上游变更并运行测试，再单独推送产品代码。
 - GitHub Pages 在 `main` 推送后构建预览站点。正式域名仍归旧站使用；预览仓库不应添加旧站的 `CNAME`。
