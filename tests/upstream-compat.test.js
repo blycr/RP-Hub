@@ -93,3 +93,21 @@ test('new model filters retain provider capability, same-model identity and orig
     context.modelSearchQuery.value = 'alpha';
     assert.equal(filteredModels.value.length, 3);
 });
+
+test('upstream 2.0.2 performance and embedded-page additions remain wired', () => {
+    const app = read('assets/js/app.js');
+    const index = read('index.html');
+    const novel = read('novel/index.html');
+    assert.match(app, /const styleFilteredContentCache = new Map\(\)/);
+    assert.match(app, /const currentCharacterAvatar = computed\(\(\) =>/);
+    assert.match(app, /const SUMMARY_KEEP_FLOORS_MAX = 50/);
+    assert.match(app, /await yieldToUi\(\)/);
+    assert.match(app, /type: 'RPHUB_THEME'/);
+    assert.match(app, /RPH_FORUM_THEME_REQUEST/);
+    assert.match(app, /window\.addEventListener\('rphub-theme-change'/);
+    assert.match(app, /char\.plazaId = pending\.cardId/);
+    assert.match(index, /currentCharacterAvatar/);
+    assert.match(novel, /书评团/);
+    assert.match(novel, /const startBookReview = async/);
+    assert.match(novel, /marked\.parse/);
+});

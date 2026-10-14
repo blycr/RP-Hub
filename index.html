@@ -79,7 +79,7 @@
     <div id="app" v-cloak class="h-full flex flex-col md:flex-row relative"
         :class="{ 'app-native-fullscreen': isChatFullscreen, 'mobile-keyboard-active': isMobileKeyboardOpen }">
         <component is="style" v-if="settings.fontSize">
-            .markdown-body :not(h1):not(h2):not(h3):not(h4):not(h5):not(h6):not(small):not(sub):not(sup):not(code) {
+            .markdown-body :not(h1):not(h2):not(h3):not(h4):not(h5):not(h6):not(small):not(sub):not(sup):not(code):not(.memory-cite) {
             font-size: inherit !important;
             }
         </component>
@@ -110,7 +110,7 @@
                 <!-- Character Background Layer -->
                 <div v-if="settings.useCharacterBackground && currentCharacter && currentCharacter?.avatar"
                     class="absolute -inset-4 bg-cover bg-center bg-no-repeat pointer-events-none transition-opacity duration-500 z-0 blur-[2px] char-bg-blur"
-                    :style="{ backgroundImage: `url(${JSON.stringify(currentCharacter.avatar)})`, opacity: 0.9 }">
+                    :style="{ backgroundImage: `url(${JSON.stringify(currentCharacterAvatar)})`, opacity: 0.9 }">
                 </div>
 
                 <!-- Blur Overlay for Description Panel -->
@@ -127,7 +127,7 @@
                             <button type="button" @click="editCharacter(currentCharacterIndex)"
                                 class="group flex-shrink-0 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-300"
                                 title="编辑角色">
-                                <img :src="currentCharacter?.avatar"
+                                <img :src="currentCharacterAvatar"
                                     class="w-14 h-14 rounded-xl object-cover border border-white shadow-sm transition-transform duration-200 group-hover:scale-[1.02]">
                             </button>
 
@@ -218,7 +218,7 @@
                             </button>
                             <div v-if="currentCharacter" class="flex items-center min-w-0 cursor-pointer"
                                 @click="showDescriptionPanel = !showDescriptionPanel">
-                                <img :src="currentCharacter?.avatar"
+                                <img :src="currentCharacterAvatar"
                                     class="w-9 h-9 rounded-full object-cover border border-white/20 shadow-sm flex-shrink-0">
                                 <span class="ml-2 font-medium text-white truncate drop-shadow-md">{{
                                     currentCharacter.name }}</span>
@@ -272,7 +272,7 @@
                         <button @click="currentView = 'characters'" class="modal-primary-button">前往角色管理</button>
                     </div>
                     <div v-else-if="chatHistory.length === 0" class="chat-empty">
-                        <img :src="currentCharacter?.avatar" class="chat-empty__avatar" alt="">
+                        <img :src="currentCharacterAvatar" class="chat-empty__avatar" alt="">
                         <p class="chat-empty__title">开始与 {{ currentCharacter.name }} 对话吧</p>
                     </div>
 
@@ -288,7 +288,7 @@
                             :class="['flex centered-message-shell max-w-[99%]', settings.immersiveMode ? 'immersive-message-shell' : 'standard-message-shell', messageUsesWideLayout(msg) || msg.isEditing_Message ? 'w-full' : '', msg.isSelf ? 'flex-row-reverse' : 'flex-row']">
                             <!-- Avatar -->
                             <div v-show="!settings.immersiveMode"
-                                :class="['flex-shrink-0 select-none', msg.shouldAnimate ? 'animate-message-fade-in' : '']">
+                                :class="['flex-shrink-0 select-none', msg.shouldAnimate && msg.role !== 'system' ? 'animate-message-fade-in' : '']">
                                 <div v-if="msg.role === 'user'"
                                     :class="['msg-avatar w-9 h-9 rounded-full overflow-hidden', msg.isSelf ? 'ml-2' : 'mr-2']">
                                     <img v-if="msg?.avatar || (msg?.isSelf && user?.avatar)"
@@ -301,14 +301,14 @@
                                         {{ (msg.name || user.name || 'U').charAt(0) }}
                                     </div>
                                 </div>
-                                <img v-else :src="currentCharacter?.avatar" class="msg-avatar w-9 h-9 rounded-full object-cover mr-2">
+                                <img v-else :src="currentCharacterAvatar" class="msg-avatar w-9 h-9 rounded-full object-cover mr-2">
                             </div>
 
                             <div
                                 :class="['flex flex-col min-w-0', settings.immersiveMode ? 'immersive-message-column' : '', messageUsesWideLayout(msg) || msg.isEditing_Message ? 'flex-1 w-full' : '', msg.isSelf ? 'items-end' : 'items-start']">
                                 <!-- Name (Outside Bubble) -->
                                 <div v-show="!settings.immersiveMode"
-                                    :class="['msg-name-tag truncate max-w-[210px] md:max-w-[250px]', msg.isSelf ? 'ml-auto mr-1' : 'mr-auto ml-1', msg.shouldAnimate ? 'animate-message-fade-in' : '']">
+                                    :class="['msg-name-tag truncate max-w-[210px] md:max-w-[250px]', msg.isSelf ? 'ml-auto mr-1' : 'mr-auto ml-1', msg.shouldAnimate && msg.role !== 'system' ? 'animate-message-fade-in' : '']">
                                     {{ msg.name || (msg.role === 'user' ? user.name : (currentCharacter?.name || 'Unknown')) }}
                                 </div>
                                 <!-- Message Bubble -->
@@ -316,7 +316,7 @@
                                     :class="{'w-full': messageUsesWideLayout(msg) || msg.isEditing_Message, 'message-edit-group': msg.isEditing_Message}">
                                     <div @click="handleGeneratedImageReroll($event, index)"
                                         :class="['msg-bubble-glass p-0 text-sm md:text-base leading-relaxed overflow-hidden',
-                                        msg.shouldAnimate && !(msg.role === 'assistant' && msg.reasoning) ? 'animate-message-in' : '',
+                                        msg.shouldAnimate && !(msg.role === 'assistant' && msg.reasoning) ? (msg.role === 'system' ? 'animate-bubble-swap' : 'animate-message-in') : '',
                                         messageUsesWideLayout(msg) || msg.isEditing_Message ? 'w-full' : '',
                                         msg.isSelf ? 'msg-bubble--self' : msg.role === 'system' ? 'msg-bubble--system' : '']">
 
@@ -623,7 +623,7 @@
                             :class="['flex flex-row centered-message-shell max-w-[99%]', settings.immersiveMode ? 'immersive-message-shell' : 'standard-message-shell']">
                             <div v-show="!settings.immersiveMode" class="flex-shrink-0 animate-message-in"
                                 style="animation-delay: 100ms;">
-                                <img :src="currentCharacter?.avatar" class="msg-avatar w-9 h-9 rounded-full object-cover mr-2">
+                                <img :src="currentCharacterAvatar" class="msg-avatar w-9 h-9 rounded-full object-cover mr-2">
                             </div>
                             <div :class="['flex flex-col min-w-0 items-start', settings.immersiveMode ? 'immersive-message-column' : '']">
                                 <div v-show="!settings.immersiveMode"
@@ -733,11 +733,7 @@
                                     </div>
                                     <!-- RP-Hub-Sync direct chat model selector v2 -->
                                     <button type="button" @click.stop="openModelSelector('model')"
-                                        class="flex min-w-0 items-center gap-2 rounded-xl bg-gray-50 px-3 py-2.5 text-left text-primary-600 hover:bg-primary-50"
-                                        :title="`${settings.model || '选择模型'} · ${getProviderDisplayName(settings.modelProviderId || settings.apiProviderId)}`">
-                                        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M7 12h10M10 18h4"></path>
-                                        </svg>
+                                        class="flex min-w-0 items-center gap-2 rounded-xl bg-gray-50 px-3 py-2.5 text-left text-primary-600 hover:bg-primary-50">
                                         <span class="min-w-0 flex-1">
                                             <span class="block truncate text-sm font-semibold">{{ settings.model || '选择模型' }}</span>
                                             <span class="block truncate text-xs text-gray-500">{{ getProviderDisplayName(settings.modelProviderId || settings.apiProviderId) }}</span>
@@ -799,7 +795,7 @@
                                         <label class="flex cursor-pointer items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-600 transition-colors hover:bg-gray-100">
                                             <span>Gemini抗截断</span>
                                             <span class="relative inline-flex flex-none items-center">
-                                                <input v-model="settings.preventTruncation" type="checkbox" class="settings-toggle-input sr-only">
+                                                <input v-model="settings.preventTruncation" @change="$event.target.checked && (settings.stream = true)" type="checkbox" class="settings-toggle-input sr-only">
                                                 <span class="settings-toggle settings-toggle--compact settings-toggle--solid"></span>
                                             </span>
                                         </label>
@@ -2224,7 +2220,7 @@
                                     <span class="relative z-10 pointer-events-none">基础模式</span>
                                     <settings-help topic="summaryMode" :open-topic="settingsHelpTopic"
                                         label="查看基础模式说明" trigger-class="relative z-20" icon-class=""
-                                        popover-class="memory-mode-help-popover" @toggle="settingsHelpTopic = $event">
+                                        @toggle="settingsHelpTopic = $event">
                                         使用总结模型为每轮对话生成第三人称的高密度记忆。超过保留楼层后，AI 原文会由对应的本轮记忆替代。
                                     </settings-help>
                                 </div>
@@ -2235,7 +2231,7 @@
                                     <span class="relative z-10 pointer-events-none">增强模式</span>
                                     <settings-help topic="enhancedMode" :open-topic="settingsHelpTopic"
                                         label="查看增强模式说明" trigger-class="relative z-20" icon-class=""
-                                        popover-class="memory-mode-help-popover is-right" @toggle="settingsHelpTopic = $event">
+                                        @toggle="settingsHelpTopic = $event">
                                         先使用总结模型为每轮对话生成第三人称的高密度记忆，再将用户原输入与对应总结生成向量；按最新输入召回增强记忆。
                                     </settings-help>
                                 </div>
@@ -2293,7 +2289,7 @@
                                     <div class="relative flex items-center">
                                         <label class="text-sm font-semibold text-gray-700">补录并发数</label>
                                         <settings-help topic="classicConcurrency" :open-topic="settingsHelpTopic"
-                                            label="查看补录并发数说明" popover-class="is-above"
+                                            label="查看补录并发数说明"
                                             @toggle="settingsHelpTopic = $event">
                                             控制同时处理多少个总结补录任务。数值越高补录越快；它只影响处理速度，不改变总结内容和记忆顺序。
                                         </settings-help>
@@ -2313,7 +2309,7 @@
                                         <div class="relative flex items-center">
                                             <label class="text-sm font-semibold text-gray-700">保留最近楼层</label>
                                             <settings-help topic="keepFloors" :open-topic="settingsHelpTopic"
-                                                label="查看保留最近楼层说明" popover-class="is-above"
+                                                label="查看保留最近楼层说明"
                                                 @toggle="settingsHelpTopic = $event">
                                                 决定最近多少楼原始对话保留在上下文中，更早的内容会由记忆引擎替代。数值越大，保留的原文越多、上下文占用也越高。
                                             </settings-help>
