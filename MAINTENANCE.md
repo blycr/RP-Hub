@@ -17,7 +17,7 @@ GitHub Pages 已绑定正式域名；2026-09-25 的隔离 Chrome 验证首页正
 
 ## 相对上游的实际文件改动
 
-当前已适配上游公告版本 **2.0.2**，基线为当前提交 `4fee1a912476ae0415bd429b9acc76e0779f2412`（2026-10-14）。此前基线为上游 2.0.0 的 `ed372012fde428499d024ac3623902b754af7721`；上游继续更新时，应从当前基线审查增量并维护此表：
+当前已适配上游公告版本 **2.0.3**，基线为当前提交 `0c1c044b0f64ad2bb48a226f9f790a31d7c0dc91`（2026-10-15）。此前基线为上游 2.0.2 的 `4fee1a912476ae0415bd429b9acc76e0779f2412`；上游继续更新时，应从当前基线审查增量并维护此表：
 
 | 文件 | 本仓库的改动 |
 | --- | --- |
@@ -28,7 +28,7 @@ GitHub Pages 已绑定正式域名；2026-09-25 的隔离 Chrome 验证首页正
 | `assets/js/rphub-sync-*.js` | 浏览器直连 GitHub 的加密同步、旧快照兼容、本地完整备份与恢复；现有用户数据迁移前继续保留旧脚本 |
 | `gateway/` | 受控 Cloudflare Worker 模型请求服务，独立预览已部署，尚未通过真实供应商流式调用验收 |
 | `character/index.html`、`novel/index.html` | 将工坊和小说页的请求接入选定供应商及受限的父子页面配置桥接 |
-| `assets/js/built-in-content.js`、`core-utils.js`、`data-services.js`、`runtime-services.js`、`tailwind-theme.js`、`assets/css/` | 跟随上游 2.0.2 的公告、记忆引用、渲染、用量统计及主题；保留上游原有功能，不维护重复实现 |
+| `assets/js/built-in-content.js`、`core-utils.js`、`data-services.js`、`runtime-services.js`、`tailwind-theme.js`、`assets/css/` | 跟随上游 2.0.3 的公告、记忆引用、渲染、用量统计及主题；保留上游原有功能，不维护重复实现 |
 | `CNAME`、`favicon.svg`、`.gitignore` | 正式域名、定制图标与本地文件忽略规则 |
 | `README.md`、`MAINTENANCE.md` | 直接在本仓库说明定制功能和维护边界 |
 
@@ -71,3 +71,11 @@ GitHub 私有仓库的带鉴权读取和写入跨域预检已通过；隔离浏�
 产品提交 `7e6db36ef268bcfd3222596889eb00af57dcb974` 已推送至 `main`，GitHub Pages 构建 [38534197635](https://github.com/blycr/RP-Hub/actions/runs/38534197635) 于 2026-10-14 08:19:40 UTC 成功，Pages API 状态为 `built`。正式域名隔离浏览器核验 HTTP 200，远程公告包含 2.0.2，新共享 Tailwind 和原生同步脚本均已加载；页面无运行错误。上一版本正式站的模拟官方导入和来源校验已通过，本轮产品代码保留该协议。
 
 本轮不更新用户脚本 2.9.16、不改动 Card 或 Legacy。真实供应商 SSE、真实用户数据和多设备验收仍需后续单独进行。
+
+## 2026-10-15 上游 2.0.3 适配
+
+从产品提交 `ab1dda6` 审查上游 `4fee1a9..0c1c044` 的 4 个提交。上游本轮新增 Gemini 输入混淆：快捷面板仅在 Gemini 模型下显示开关，把最新一条用户输入作为成对的 `read_user_input` 工具调用与工具结果传递；其余历史、图片说明和附加要求仍按原上下文发送。产品保留该功能，并在共享 `api-utils.js` 中保留上游的消息构造器，同时不改变本站的多供应商、Responses 和原生工具调用路由。
+
+协调器已兼容上游 2.0.3 将 `buildUserInputToolMessages` 与 `buildApiEndpoint` 一起导出的新解构形式；在干净上游目录中完成一次事务重放与二次幂等检查，广场主题握手和 `plazaId` 安全补丁均保留。产品新增输入混淆、API 工具消息和公告兼容测试。
+
+验证结果：26 项产品与网关测试、74 项私有协调与用户脚本测试通过；产品 JavaScript 语法检查、干净上游事务重放与二次幂等、隔离 Chromium 回归均通过。产品提交 `7063f7c` 已推送至 `main`，GitHub Pages 构建 [38692500022](https://github.com/blycr/RP-Hub/actions/runs/38692500022) 于 2026-10-15 06:28:05 UTC 成功；正式域名隔离浏览器核验 HTTP 200、Vue 挂载、原生同步、网关设置、快捷模型面板、官方导入和来源校验均通过，页面无运行错误。用户脚本仍为 2.9.16，Card 与 Legacy 不需要改动；真实供应商 SSE、真实用户数据和多设备验收仍需单独进行。

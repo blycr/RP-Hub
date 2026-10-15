@@ -9,7 +9,7 @@
 
 > **A roleplay chat and character card creation tool that primarily stores data locally in your browser.**
 
-This is the customized production repository based on [STA1N156/RP-Hub](https://github.com/STA1N156/RP-Hub), with an independent Git history. The live site is [rp.blycr.xyz](https://rp.blycr.xyz/). On 2026-10-14 it was updated to upstream commit `4fee1a9` (the upstream announcement is **2.0.2**). It retains the upstream performance and interface updates, unlimited custom providers, provider-specific model selection, Chat Completions, Responses, Embeddings, optional encrypted GitHub sync and a controlled request gateway. See [MAINTENANCE.md](MAINTENANCE.md) for ownership, changed files, verification and release procedures.
+This is the customized production repository based on [STA1N156/RP-Hub](https://github.com/STA1N156/RP-Hub), with an independent Git history. The live site is [rp.blycr.xyz](https://rp.blycr.xyz/). On 2026-10-15 it was updated to upstream commit `0c1c044` (the upstream announcement is **2.0.3**). It retains the upstream performance and interface updates, Gemini input obfuscation, unlimited custom providers, provider-specific model selection, Chat Completions, Responses, Embeddings, optional encrypted GitHub sync and a controlled request gateway. See [MAINTENANCE.md](MAINTENANCE.md) for ownership, changed files, verification and release procedures.
 
 The public repository contains the website. The private Sync repository maintains the transition userscript, encrypted snapshots and patch sources; the private Card repository serves local card resources. Legacy is a private archived snapshot. Existing userscripts and snapshots should be retained until the user's data migration is verified. Updating the website does not update an installed userscript.
 
@@ -37,6 +37,8 @@ The API must allow requests from your browser page through CORS. A working webpa
 Use the HTTPS production site for native GitHub sync and the optional gateway. A local file has a `null` origin and does not automatically receive the gateway's CORS permission. The chat quick panel preserves preset slots and reasoning controls, with an additional direct model picker that keeps provider identity for duplicate model IDs.
 
 The upstream update also adds cached style filtering, large-avatar Blob URLs, a workshop reasoning panel, plaza theme synchronization, and the Novel page book-review panel.
+
+For Gemini models, the chat quick panel can optionally enable **Input obfuscation**. The latest user message is passed as a paired `read_user_input` tool exchange; the setting is off by default and only appears for Gemini model IDs.
 
 ## Memory, Tools, and Compatibility Mode
 
