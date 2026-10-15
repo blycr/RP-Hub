@@ -111,3 +111,41 @@ test('upstream 2.0.2 performance and embedded-page additions remain wired', () =
     assert.match(novel, /const startBookReview = async/);
     assert.match(novel, /marked\.parse/);
 });
+
+test('upstream 2.0.3 Gemini input obfuscation keeps a complete tool exchange', () => {
+    const apiSource = read('assets/js/api-utils.js');
+    const window = {
+        RPHubUtils: {
+            extractApiErrorMessage: () => '',
+            formatApiErrorMessage: () => '',
+            getApiUsagePayload: () => null,
+        },
+        RPHubCardUtils: {
+            extractNativeReasoning: () => '',
+            isNativeReasoningPart: () => false,
+        },
+    };
+    vm.runInNewContext(apiSource, { window, TextDecoder, AbortController, fetch: () => { throw new Error('unused'); } });
+    assert.deepEqual(JSON.parse(JSON.stringify(window.RPHubApiUtils.buildUserInputToolMessages('真实输入', 'call_test'))), [
+        {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+                id: 'call_test',
+                type: 'function',
+                function: { name: 'read_user_input', arguments: '{}' },
+            }],
+        },
+        {
+            role: 'tool',
+            tool_call_id: 'call_test',
+            content: JSON.stringify({ source: 'user_input', text: '真实输入' }),
+        },
+    ]);
+    const app = read('assets/js/app.js');
+    const index = read('index.html');
+    assert.match(app, /inputObfuscation: false/);
+    assert.match(app, /settings\.inputObfuscation === true/);
+    assert.match(app, /buildUserInputToolMessages\(inputToolContent/);
+    assert.match(index, /输入混淆/);
+});

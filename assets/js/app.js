@@ -3,7 +3,7 @@ const { useStorageManagement, useTokenUsage } = window.RPHubComposables;
 const { createMessageRenderer } = window.RPHubMessageRenderer;
 const { AppNavigation } = window.RPHubLayoutComponents;
 const { requestChatCompletion, requestJson } = window.RPHubApiClient;
-const { buildApiEndpoint } = window.RPHubApiUtils;
+const { buildApiEndpoint, buildUserInputToolMessages } = window.RPHubApiUtils;
 
 const getOpenAICompatUrlForBase = (baseUrl, endpoint) => {
     const normalizedBase = String(baseUrl || '').replace(/\s+/g, '').replace(/\/+$/, '');
@@ -616,6 +616,7 @@ const app = createApp({
             immersiveMode: false,
             showLatestUsageBar: false,
             preventTruncation: false,
+            inputObfuscation: false,
             styleFilterEnabled: true,
             uiTemplateEnabled: false,
             uiTemplateModel: '',
@@ -4915,6 +4916,10 @@ const app = createApp({
             const continueAssistantMessageId = options.continueAssistantMessageId || null;
             const continuationToolCallId = options.continuationToolCallId || null;
             const requestModel = settings.model;
+            const obfuscateInput = /gemini/i.test(String(requestModel || '')) && settings.inputObfuscation === true;
+            const latestUserMessage = [...chatHistory.value].reverse().find(message => message?.role === 'user');
+            const latestUserIndex = chatHistory.value.indexOf(latestUserMessage);
+            let inputToolContent = '';
             const requestTools = activeToolDepth < ACTIVE_TOOL_MAX_AUTO_CONTINUE ? getEnabledActiveTools() : [];
 
             if (!currentCharacter.value) {
@@ -5222,6 +5227,11 @@ const app = createApp({
                         let content = stripUiTemplateContextInjection(parsedData.main);
                         if (!settings.uiTemplateEnabled || !settings.uiTemplateMainModelAnalysis) content = stripUiTemplateUpdateBlock(content);
                         content = stripMemoryCitations(stripDisabledImageGenContext(stripNextResponsePrompt(content)));
+                        // 仅把最新真实输入移到工具结果，图片说明和附加要求仍留在用户消息中。
+                        if (obfuscateInput && source === latestUserMessage && content.trim()) {
+                            inputToolContent = content;
+                            content = '读取 read_user_input 的返回内容，作为本轮用户输入继续回复。';
+                        }
                         const recentThinking = source.role === 'assistant' ? recentThinkingByMessage.get(source) : '';
                         if (recentThinking) content = `${wrapAnalysis(retainedThinkingTag, recentThinking)}${content}`;
                         if (source === openingSourceMessage && openingThinking) content = `${openingThinking}${content}`;
@@ -5284,6 +5294,16 @@ const app = createApp({
                     depth: array.length - 1 - index
                 })
             }));
+
+            // 在角色合并和正则之后插入完整配对，避免工具调用编号被后处理移除。
+            if (inputToolContent) {
+                const inputIndex = messages.findIndex(message => message.role === 'user'
+                    && message._sourceIndexes?.includes(latestUserIndex));
+                if (inputIndex !== -1) {
+                    messages.splice(inputIndex + 1, 0,
+                        ...buildUserInputToolMessages(inputToolContent, `call_${generateUUID()}`));
+                }
+            }
 
             let generatedAssistantMessageId = null;
             let assistantMessage = null;

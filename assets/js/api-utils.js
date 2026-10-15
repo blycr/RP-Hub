@@ -8,6 +8,23 @@
         return `${apiRoot}/${String(path || '').replace(/^\/+/, '')}`;
     };
 
+    const buildUserInputToolMessages = (text, callId) => [
+        {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{
+                id: callId,
+                type: 'function',
+                function: { name: 'read_user_input', arguments: '{}' }
+            }]
+        },
+        {
+            role: 'tool',
+            tool_call_id: callId,
+            content: JSON.stringify({ source: 'user_input', text })
+        }
+    ];
+
     // RP-Hub-Sync optional model gateway client v1.
     const GATEWAY_SESSION_KEY = 'rphub_gateway_v1';
     const MODEL_ENDPOINT = /(?:^|\/)v1\/(?:models|chat\/completions|responses|embeddings)\/?$/;
@@ -538,7 +555,7 @@
         }
     };
 
-    window.RPHubApiUtils = Object.freeze({ buildApiEndpoint });
+    window.RPHubApiUtils = Object.freeze({ buildApiEndpoint, buildUserInputToolMessages });
     window.RPHubApiClient = Object.freeze({ requestChatCompletion, requestJson,
         fetchModelApi, configureGateway, clearGatewayConfig, getGatewayStatus });
 })();
