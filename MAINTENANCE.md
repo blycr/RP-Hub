@@ -92,4 +92,4 @@ GitHub Pages 已绑定正式域名。2026-10-28 的隔离 Chromium 验证首页�
 
 验证结果：产品与 Worker 测试 27/27 通过，Sync 协调器测试 72/72 通过；JavaScript 语法和 `git diff --check` 通过。隔离 Chromium 使用虚构供应商与角色，验证首页 Vue 挂载、设置页无两张废弃卡片、空间管理仍在、API 与生图密钥控件、官方升级公告、Gemini 工具交换、世界书进入工具结果、自动重试更换零宽前缀及上下文查看器标记。未使用真实用户快照或真实供应商 Key。
 
-本轮不修改用户脚本 2.9.16、Card 或 Legacy。真实供应商 SSE、现有用户数据和多设备验收仍需单独进行。发布与 Pages 结果在本节推送完成后更新。
+本轮不修改用户脚本 2.9.16、Card 或 Legacy。真实供应商 SSE、现有用户数据和多设备验收仍需单独进行。产品提交 `762b1f3`、`10feec1` 已推送，GitHub Pages 构建 [40636766763](https://github.com/blycr/RP-Hub/actions/runs/40636766763) 与 [40637098445](https://github.com/blycr/RP-Hub/actions/runs/40637098445) 均成功；正式域名隔离 Chromium 验证 HTTP 200、Vue 挂载、2.0.5 公告、设置页精简、密钥控件、未公开加载同步脚本及非扩展请求无 4xx，均通过。
