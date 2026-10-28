@@ -1298,6 +1298,7 @@
                         url: buildApiEndpoint(settings.value.apiUrl, protocol === 'openai-responses' ? 'responses' : 'chat/completions'),
                         protocol,
                         apiKey: settings.value.apiKey, ...options,
+                        sessionId: currentBookId.value || `novel-${settings.value.providerId || 'default'}`,
                         onDelta: ({ content }) => onContent?.(content)
                     });
                     if (!result.isStream) onContent?.(result.content);
@@ -2304,7 +2305,8 @@
                     isLoadingModels.value = true;
                     try {
                         const data = await window.RPHubApiClient.requestJson({
-                            url: buildApiEndpoint(settings.value.apiUrl, 'models'), apiKey: settings.value.apiKey
+                            url: buildApiEndpoint(settings.value.apiUrl, 'models'), apiKey: settings.value.apiKey,
+                            sessionId: currentBookId.value || `novel-${settings.value.providerId || 'default'}`
                         });
                         if (data.data) {
                             availableModels.value = data.data.sort((a, b) => a.id.localeCompare(b.id));

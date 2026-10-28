@@ -1833,6 +1833,7 @@ You are carrying out a fictional character card creation and editing task. Act a
                         url: window.RPHubApiUtils.buildApiEndpoint(api.url, api.chatProtocol === 'openai-responses' ? 'responses' : 'chat/completions'),
                         protocol: api.chatProtocol,
                         apiKey: api.key, model: api.model, messages, stream, temperature, replyInTool, tools, requireTool,
+                        sessionId: currentCharacter.value?.id || 'rp-hub-workshop',
                         signal: abortController.value.signal, onDelta: display
                     });
                     if (!result.isStream) display(result);

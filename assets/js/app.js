@@ -1795,6 +1795,7 @@ const app = createApp({
                     ? 'responses' : 'chat/completions'),
                 apiKey: config.apiKey,
                 protocol: config.chatProtocol,
+                sessionId: requestOptions.sessionId || getCurrentStoryBranchScopeId(),
             };
             return requestChatCompletion({ ...request, onUsage: (usage, metrics) => recordApiUsage(usage, {
                 type, model: request.model, apiUrl: config.apiUrl, apiKey: config.apiKey, ...metrics
@@ -3825,7 +3826,8 @@ const app = createApp({
                     baseUrl: config.apiUrl,
                     apiKey: config.apiKey,
                 });
-                const response = await window.RPHubApiClient.fetchModelApi(request.url, request.init);
+                const response = await window.RPHubApiClient.fetchModelApi(
+                    request.url, request.init, getCurrentStoryBranchScopeId());
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const data = await response.json();
                 return apiAdapters.parseModelList(data).map(model => ({
@@ -4004,7 +4006,8 @@ const app = createApp({
                 return;
             }
             await checkConnectionStatus(apiStatus, apiLatency, 'API', signal => (
-                requestJson({ url: buildApiEndpoint(settings.apiUrl, 'models'), apiKey: settings.apiKey, signal })
+                requestJson({ url: buildApiEndpoint(settings.apiUrl, 'models'), apiKey: settings.apiKey, signal,
+                    sessionId: getCurrentStoryBranchScopeId() })
             ), () => true);
         };
 
@@ -5990,6 +5993,7 @@ const app = createApp({
             const apiKey = embeddingConfig.apiKey;
             const data = await requestJson({
                 url: buildApiEndpoint(apiUrl, 'embeddings'), apiKey, signal,
+                sessionId: getCurrentStoryBranchScopeId(),
                 body: { model, input: normalizedInputs.length === 1 ? normalizedInputs[0] : normalizedInputs }
             });
             recordApiUsage(getApiUsagePayload(data), {

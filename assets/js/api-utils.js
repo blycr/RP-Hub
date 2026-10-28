@@ -4,8 +4,15 @@
     const { extractNativeReasoning, isNativeReasoningPart } = window.RPHubCardUtils;
     const buildApiEndpoint = (baseUrl, path) => {
         const root = String(baseUrl || '').replace(/\/+$/, '');
+        const endpoint = String(path || '').replace(/^\/+/, '');
+        if (/^https:\/\/opencode\.ai\/inference\/go\/v1$/i.test(root)) {
+            // Go's model list is native; chat and embeddings use the OpenAI subpath.
+            return endpoint === 'models'
+                ? `https://opencode.ai/inference/go/v1/${endpoint}`
+                : `https://opencode.ai/inference/go/openai/v1/${endpoint}`;
+        }
         const apiRoot = /\/v1$/i.test(root) ? root : `${root}/v1`;
-        return `${apiRoot}/${String(path || '').replace(/^\/+/, '')}`;
+        return `${apiRoot}/${endpoint}`;
     };
 
     const buildUserInputToolMessages = (text, callId) => [
@@ -24,6 +31,35 @@
             content: JSON.stringify({ source: 'user_input', text })
         }
     ];
+
+    const OPENCODE_API_ORIGIN = 'https://opencode.ai';
+    const OPENCODE_INFERENCE_PATH = /^\/inference\/go(?:\/|$)/;
+    const OPENCODE_SESSION_PATTERN = /^(?:ses_|sess_)[A-Za-z0-9._:-]{12,124}$/;
+    const stableSessionId = (value) => {
+        const text = String(value || '').trim();
+        if (OPENCODE_SESSION_PATTERN.test(text)) return text;
+        // FNV-1a keeps role and branch identifiers opaque while remaining stable across reloads.
+        let hash = 0x811c9dc5;
+        for (let index = 0; index < text.length; index++) {
+            hash ^= text.charCodeAt(index);
+            hash = Math.imul(hash, 0x01000193);
+        }
+        return `ses_rphub_${(hash >>> 0).toString(16).padStart(8, '0')}_${text.length.toString(16)}`;
+    };
+    const isOpenCodeApiUrl = raw => {
+        try {
+            const url = new URL(String(raw || ''));
+            return url.origin === OPENCODE_API_ORIGIN && OPENCODE_INFERENCE_PATH.test(url.pathname);
+        } catch (_) {
+            return false;
+        }
+    };
+    const withProviderHeaders = (headers, url, sessionId) => {
+        const next = new Headers(headers);
+        if (!isOpenCodeApiUrl(url)) return next;
+        next.set('x-opencode-session', stableSessionId(sessionId));
+        return next;
+    };
 
     // RP-Hub-Sync optional model gateway client v1.
     const GATEWAY_SESSION_KEY = 'rphub_gateway_v1';
@@ -72,16 +108,19 @@
         return getGatewayStatus();
     };
     const clearGatewayConfig = () => gatewaySession().removeItem(GATEWAY_SESSION_KEY);
-    const fetchModelApi = (rawTarget, init = {}) => {
+    const fetchModelApi = (rawTarget, init = {}, sessionId = '') => {
         const config = getGatewayConfig();
-        if (!config) return fetch(rawTarget, init);
+        const sessionHeaders = withProviderHeaders(init.headers, rawTarget, sessionId);
+        if (!config) return fetch(rawTarget, { ...init, headers: sessionHeaders });
         let target;
         try { target = new URL(String(rawTarget)); }
-        catch { return fetch(rawTarget, init); }
-        if (!config.providerOrigins.includes(target.origin)) return fetch(rawTarget, init);
+        catch { return fetch(rawTarget, { ...init, headers: sessionHeaders }); }
+        if (!config.providerOrigins.includes(target.origin)) {
+            return fetch(rawTarget, { ...init, headers: sessionHeaders });
+        }
         target = exactHttpsUrl(rawTarget);
         if (!MODEL_ENDPOINT.test(target.pathname)) throw new Error('该供应商请求不属于允许的模型端点');
-        const headers = new Headers(init.headers);
+        const headers = withProviderHeaders(init.headers, target.href, sessionId);
         headers.set('X-RPHub-Gateway-Token', config.token);
         headers.set('X-RPHub-Target', target.href);
         return fetch(config.url, { ...init, headers });
@@ -155,7 +194,8 @@
         try {
             const response = await fetchModelApi(options.url, {
                 method: options.body === undefined ? 'GET' : 'POST',
-                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${options.apiKey}` },
+                headers: withProviderHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${options.apiKey}` },
+                    options.url, options.sessionId),
                 ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
                 signal: controller.signal
             });
@@ -558,5 +598,6 @@
 
     window.RPHubApiUtils = Object.freeze({ buildApiEndpoint, buildUserInputToolMessages });
     window.RPHubApiClient = Object.freeze({ requestChatCompletion, requestJson,
-        fetchModelApi, configureGateway, clearGatewayConfig, getGatewayStatus });
+        fetchModelApi, configureGateway, clearGatewayConfig, getGatewayStatus,
+        stableOpenCodeSession: stableSessionId, withProviderHeaders });
 })();

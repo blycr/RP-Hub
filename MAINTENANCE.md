@@ -84,6 +84,14 @@ GitHub Pages 已绑定正式域名。2026-10-28 的隔离 Chromium 验证首页�
 
 验证结果：26 项产品与网关测试、74 项私有协调与用户脚本测试通过；产品 JavaScript 语法检查、干净上游事务重放与二次幂等、隔离 Chromium 回归均通过。产品提交 `7063f7c` 已推送至 `main`，GitHub Pages 构建 [38692500022](https://github.com/blycr/RP-Hub/actions/runs/38692500022) 于 2026-10-15 06:28:05 UTC 成功；正式域名隔离浏览器核验 HTTP 200、Vue 挂载、原生同步、网关设置、快捷模型面板、官方导入和来源校验均通过，页面无运行错误。用户脚本仍为 2.9.16，Card 与 Legacy 不需要改动；真实供应商 SSE、真实用户数据和多设备验收仍需单独进行。
 
+## 2026-10-28 OpenCode Go 兼容
+
+为 OpenCode Go 增加稳定的 `x-opencode-session` 与自有 User-Agent。会话 ID 从当前角色和剧情分支的稳定标识派生为不可读的 `ses_rphub_...`；主聊天、总结、UI 模板、识图、模型列表、嵌入、角色工坊和小说页共用同一请求头策略。仅对 `https://opencode.ai/inference/go` 生效，不向其他 OpenAI 兼容供应商添加额外头。
+
+OpenCode Go 的路径按官方文档区分：模型列表为 `/inference/go/v1/models`，Chat Completions 为 `/inference/go/openai/v1/chat/completions`，Responses 为 `/inference/go/openai/v1/responses`。用户脚本 2.9.17 的 GM 代理保留页面提供的会话头，旧页面缺少时为 OpenCode Go 补兼容值。
+
+验证使用一次最小真实 Chat Completions 和一次最小真实 Responses 请求，均由 OpenCode Go 返回 HTTP 200；无效测试 Key 在带会话头时返回 401，不带返回原先的 400。测试 Key 未写入仓库，临时响应已删除。回归测试明确覆盖 Chat Completions、Responses、模型列表和第三方 origin 不添头。
+
 ## 2026-10-28 上游 2.0.5 适配
 
 从已适配的 `0c1c044` 审查上游 `49c94e4..cd8f2a6`，范围包含 2.0.4 和 2.0.5。采用 Gemini 自动输入混淆：先完成世界书、增强记忆和附加要求注入，再将整条最新用户消息搬入成对的 `read_user_input` 工具交换；共享请求客户端的 `onBeforeRequest` 在每次实际请求前生成新的零宽前缀，自动重试也会更新。迁移世界书和增强记忆元数据到工具结果，修正上下文查看器不因召回附加内容改变原消息角色，并采用密钥复制/显示、长请求时长显示、渲染分支防回溯修正和上游 2.0.5 公告条目。
