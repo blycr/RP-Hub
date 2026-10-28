@@ -523,6 +523,46 @@
             </div>`
     };
 
+    // Key fields hide copied values and expose copy/show controls only while focused.
+    const SecretInput = {
+        props: {
+            modelValue: { type: String, default: '' },
+            placeholder: { type: String, default: '' },
+            inputClass: { type: [String, Array, Object], default: '' }
+        },
+        emits: ['update:modelValue'],
+        data: () => ({ visible: false, copied: false }),
+        methods: {
+            copy() {
+                navigator.clipboard.writeText(this.modelValue).then(() => {
+                    this.copied = true;
+                    clearTimeout(this.copiedTimer);
+                    this.copiedTimer = setTimeout(() => { this.copied = false; }, 1500);
+                }).catch(() => {});
+            },
+            hideOnLeave(event) {
+                if (!this.$el.contains(event.relatedTarget)) this.visible = false;
+            }
+        },
+        template: `
+            <div class="secret-input" @focusout="hideOnLeave">
+                <input :value="modelValue" @input="$emit('update:modelValue', $event.target.value)"
+                    :type="visible ? 'text' : 'password'" :placeholder="placeholder" :class="inputClass" spellcheck="false">
+                <div class="secret-input__actions">
+                    <button type="button" @mousedown.prevent @click="copy" :disabled="!modelValue"
+                        :title="copied ? '已复制' : '复制'" :aria-label="copied ? '已复制' : '复制'">
+                        <svg v-if="copied" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        <svg v-else fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2" stroke-width="2"></rect><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"></path></svg>
+                    </button>
+                    <button type="button" @mousedown.prevent @click="visible = !visible" :aria-pressed="visible"
+                        :title="visible ? '隐藏' : '显示'" :aria-label="visible ? '隐藏' : '显示'">
+                        <svg v-if="visible" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"></path></svg>
+                        <svg v-else fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+                    </button>
+                </div>
+            </div>`
+    };
+
     const SettingsPageHeader = {
         props: { title: String },
         emits: ['menu'],
@@ -2185,7 +2225,9 @@
             const formatDuration = (value) => {
                 if (!Number.isFinite(value)) return '';
                 if (value < 1000) return `${Math.round(value)}ms`;
-                return `${Number((value / 1000).toFixed(1))}s`;
+                if (value < 59950) return `${Number((value / 1000).toFixed(1))}s`;
+                const seconds = Math.round(value / 1000);
+                return `${Math.floor(seconds / 60)}m${seconds % 60}s`;
             };
             const formatOutputSpeed = (record) => {
                 if (record?.isStream !== true
@@ -3088,6 +3130,7 @@
         PresetEditorModal,
         RegexEditorModal,
         RetryConfirmModal,
+        SecretInput,
         SettingsHelp,
         SettingsPageHeader,
         MemoryBackfillModal,

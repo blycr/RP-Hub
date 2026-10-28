@@ -458,15 +458,14 @@
                                                 </div>
                                             </div>
                                             <!-- Active Tool Calls -->
-                                            <div v-if="msg.role === 'assistant' && activeToolContinuationMessageId === msg.id && (isGenerating || isRemoteGenerating) && !activeToolContinuationHasResponse && !isThinking"
+                                            <div v-if="msg.role === 'assistant' && activeToolContinuationMessageId === msg.id && isGenerating && !activeToolContinuationHasResponse && !isThinking"
                                                 class="active-tool-waiting">
                                                 <div class="typing-indicator scale-125">
                                                     <span></span><span></span><span></span>
                                                 </div>
                                                 <generation-timer v-if="isGenerating" :wait-time="currentWaitTime"
                                                     :estimated-time="estimatedGenerationTime"
-                                                    :remote-estimated-time="remoteEstimatedTime"
-                                                    :remote="isRemoteGenerating"></generation-timer>
+                                                    :remote="false"></generation-timer>
                                             </div>
                                             <div v-if="msg.role === 'assistant' && msg.uiTemplateBlocks && msg.uiTemplateBlocks.top && msg.uiTemplateBlocks.top.length"
                                                 class="ui-template-message-block ui-template-message-block-top">
@@ -483,7 +482,7 @@
                                             <!-- Main Part -->
                                             <template v-if="parseCot(msg.content).main">
                                                 <template
-                                                    v-if="index === chatHistory.length - 1 && (isGenerating || isRemoteGenerating)">
+                                                    v-if="index === chatHistory.length - 1 && isGenerating">
                                                     <div v-if="processMainContent(parseCot(msg.content).main, true).text"
                                                         class="markdown-body"
                                                         :style="settings.fontSize ? { fontSize: settings.fontSize + 'px' } : {}"
@@ -523,7 +522,7 @@
                                     </div>
 
                                     <!-- Message Actions -->
-                                    <div v-if="!msg.isEditing_Message && !isMessageThinkingOrRunning(msg) && !(index === chatHistory.length - 1 && !msg.isSelf && (isGenerating || isRemoteGenerating)) && !(msg.isSelf && isConversationBusy && !chatHistory.slice(index + 1).some(m => m.isSelf))"
+                                    <div v-if="!msg.isEditing_Message && !isMessageThinkingOrRunning(msg) && !(index === chatHistory.length - 1 && !msg.isSelf && isGenerating) && !(msg.isSelf && isConversationBusy && !chatHistory.slice(index + 1).some(m => m.isSelf))"
                                         :class="['message-action-bar absolute bottom-0 -mb-9 md:-mb-10 flex items-center transition-opacity duration-200', msg.isSelf ? 'right-0' : 'left-0', isStyleFilterDetailsOpen(msg, index) ? 'opacity-100' : 'opacity-100 md:opacity-0 md:group-hover:opacity-100']">
                                         <button v-if="index === chatHistory.length - 1 && (msg.role === 'user' || chatHistory.slice(0, index).some(m => m.role === 'user'))"
                                             @click="regenerateMessage(index)"
@@ -617,7 +616,7 @@
                     </template>
 
                     <!-- Typing Indicator -->
-                    <div v-if="(isGenerating || isRemoteGenerating) && !isReceiving && !isThinking && !hasActiveToolInlineWork"
+                    <div v-if="isGenerating && !isReceiving && !isThinking && !hasActiveToolInlineWork"
                         :class="['flex w-full', settings.immersiveMode ? 'immersive-message-row justify-start' : 'standard-message-row']">
                         <div
                             :class="['flex flex-row centered-message-shell max-w-[99%]', settings.immersiveMode ? 'immersive-message-shell' : 'standard-message-shell']">
@@ -638,8 +637,7 @@
                                     </div>
                                     <generation-timer v-if="isGenerating" :wait-time="currentWaitTime"
                                         :estimated-time="estimatedGenerationTime"
-                                        :remote-estimated-time="remoteEstimatedTime"
-                                        :remote="isRemoteGenerating"></generation-timer>
+                                        :remote="false"></generation-timer>
                                 </div>
                             </div>
                         </div>
@@ -799,19 +797,12 @@
                                                 <span class="settings-toggle settings-toggle--compact settings-toggle--solid"></span>
                                             </span>
                                         </label>
-                                        <label title="仅将最新一条用户输入作为工具结果传递" class="flex cursor-pointer items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-600 transition-colors hover:bg-gray-100">
-                                            <span>输入混淆</span>
-                                            <span class="relative inline-flex flex-none items-center">
-                                                <input v-model="settings.inputObfuscation" type="checkbox" class="settings-toggle-input sr-only">
-                                                <span class="settings-toggle settings-toggle--compact settings-toggle--solid"></span>
-                                            </span>
-                                        </label>
                                     </div>
                                 </div>
                             </div>
                         </transition>
                         <textarea v-model="userInput" @input="autoResizeInput" @focus="handleChatInputFocus"
-                            @blur="handleChatInputBlur" @keydown.enter.exact.prevent="sendMessage"
+                            @blur="handleChatInputBlur" enterkeyhint="enter"
                             :placeholder="'输入消息...'"
                             class="island-input chat-input-scrollbar"
                             rows="1" ref="inputBox"></textarea>
@@ -1098,38 +1089,6 @@
                     </template>
                 </settings-page-header>
                 <div class="settings-stack">
-
-                    <div class="settings-card">
-                        <div class="settings-card__header">
-                            <div class="settings-card__title">模型请求网关（可选）</div>
-                            <span class="text-xs text-gray-500">{{ gatewayStatus.enabled ? '本标签页已启用' : '未启用' }}</span>
-                        </div>
-                        <form class="settings-card__body space-y-4" autocomplete="off" @submit.prevent="saveGatewayConfig">
-                            <p class="text-sm text-gray-600">只将下方指定供应商的模型请求交给网关，其余供应商继续直连。口令仅保存在当前浏览器标签页的会话存储中，不进入应用数据同步。</p>
-                            <div>
-                                <label for="gateway-url" class="settings-label">网关地址</label>
-                                <input id="gateway-url" v-model.trim="gatewayUrlDraft" type="url" required
-                                    class="settings-control font-mono" placeholder="https://example.workers.dev/proxy">
-                            </div>
-                            <div>
-                                <label for="gateway-origins" class="settings-label">需要网关的供应商来源</label>
-                                <input id="gateway-origins" v-model.trim="gatewayOriginsDraft" type="text" required
-                                    class="settings-control font-mono" placeholder="https://api.example.com, https://other.example">
-                                <p class="text-xs text-gray-500 mt-1">用逗号分隔 HTTPS Origin；须先在网关服务端批准。支持浏览器跨域的供应商可直接访问。</p>
-                            </div>
-                            <div>
-                                <label for="gateway-token" class="settings-label">本次会话的网关口令</label>
-                                <input id="gateway-token" v-model="gatewayTokenDraft" type="password" required minlength="32"
-                                    class="settings-control font-mono" autocomplete="new-password" placeholder="至少 32 个字符">
-                            </div>
-                            <div class="flex flex-wrap gap-2">
-                                <button type="submit" class="settings-action">保存并启用</button>
-                                <button v-if="gatewayStatus.enabled" type="button" class="settings-action" @click="disableGateway">停用网关</button>
-                            </div>
-                        </form>
-                    </div>
-
-                    <rphub-native-sync class="settings-card"></rphub-native-sync>
 
                     <!-- User Settings -->
                     <div class="settings-card">
@@ -1568,9 +1527,9 @@
                                                 </path>
                                             </svg>
                                         </div>
-                                        <input v-model="settings.apiKey" type="password"
-                                            class="settings-control settings-control--icon font-mono"
-                                            placeholder="sk-...">
+                                        <secret-input v-model="settings.apiKey"
+                                            input-class="settings-control settings-control--icon font-mono"
+                                            placeholder="sk-..."></secret-input>
                                     </div>
                                 </div>
 
@@ -1658,9 +1617,9 @@
                                             class="min-w-0">
                                             <label
                                                 class="settings-label">自动生图密钥</label>
-                                            <input v-model="settings.imageGenKey" type="password"
-                                                class="settings-control font-mono"
-                                                placeholder="STA1N密钥/NAI官方密钥">
+                                            <secret-input v-model="settings.imageGenKey"
+                                                input-class="settings-control font-mono"
+                                                placeholder="STA1N密钥/NAI官方密钥"></secret-input>
                                         </div>
 
                                         <!-- Image Model -->
@@ -2643,7 +2602,7 @@
 
     <script>
         (function (stamp) {
-            ['built-in-content', 'core-utils', 'api-utils', 'data-services', 'rphub-sync-github', 'rphub-sync-crypto', 'rphub-sync-snapshot', 'rphub-sync-native', 'runtime-services',
+            ['built-in-content', 'core-utils', 'api-utils', 'data-services', 'runtime-services',
                 'update-check', 'ui-components', 'rphub-api-adapters', 'app'].forEach(name => {
                 document.write('<script src="assets/js/' + name + '.js?v=' + stamp + '"><\/script>');
             });

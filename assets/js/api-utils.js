@@ -423,6 +423,7 @@
             pendingReasoning += reasoning;
         };
         try {
+            options.onBeforeRequest?.();
             const tools = [...(options.tools || []), ...(options.replyInTool && !options.requireTool ? [replyTool] : [])];
             const responsesProtocol = options.protocol === 'openai-responses';
             const body = responsesProtocol ? {

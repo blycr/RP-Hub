@@ -112,7 +112,7 @@ test('upstream 2.0.2 performance and embedded-page additions remain wired', () =
     assert.match(novel, /marked\.parse/);
 });
 
-test('upstream 2.0.3 Gemini input obfuscation keeps a complete tool exchange', () => {
+test('upstream 2.0.5 Gemini input obfuscation runs automatically with a fresh request prefix', () => {
     const apiSource = read('assets/js/api-utils.js');
     const window = {
         RPHubUtils: {
@@ -125,7 +125,11 @@ test('upstream 2.0.3 Gemini input obfuscation keeps a complete tool exchange', (
             isNativeReasoningPart: () => false,
         },
     };
-    vm.runInNewContext(apiSource, { window, TextDecoder, AbortController, fetch: () => { throw new Error('unused'); } });
+    vm.runInNewContext(apiSource, {
+        window, TextDecoder, AbortController,
+        fetch: () => { throw new Error('unused'); },
+        setTimeout, clearTimeout, setInterval, clearInterval,
+    });
     assert.deepEqual(JSON.parse(JSON.stringify(window.RPHubApiUtils.buildUserInputToolMessages('真实输入', 'call_test'))), [
         {
             role: 'assistant',
@@ -144,8 +148,29 @@ test('upstream 2.0.3 Gemini input obfuscation keeps a complete tool exchange', (
     ]);
     const app = read('assets/js/app.js');
     const index = read('index.html');
-    assert.match(app, /inputObfuscation: false/);
-    assert.match(app, /settings\.inputObfuscation === true/);
-    assert.match(app, /buildUserInputToolMessages\(inputToolContent/);
-    assert.match(index, /输入混淆/);
+    assert.match(app, /const obfuscateInput = \/gemini\/i\.test\(String\(requestModel \|\| ''\)\)/);
+    assert.match(app, /buildUserInputToolMessages\(inputMessage\.content/);
+    assert.match(app, /const prepareRequest = \(\) =>/);
+    assert.match(app, /onBeforeRequest: prepareRequest/);
+    assert.match(app, /prefix \+ inputPrompt/);
+    assert.match(apiSource, /options\.onBeforeRequest\?\.\(\)/);
+    assert.doesNotMatch(app, /settings\.inputObfuscation/);
+    assert.doesNotMatch(index, /v-model="settings\.inputObfuscation"/);
+    assert.doesNotMatch(index, /模型请求网关/);
+    assert.doesNotMatch(index, /rphub-native-sync/);
+    assert.match(index, /enterkeyhint="enter"/);
+    assert.doesNotMatch(index, /@keydown\.enter\.exact\.prevent="sendMessage"/);
+});
+
+test('upstream 2.0.5 secret inputs, context markers and long durations are retained', () => {
+    const ui = read('assets/js/ui-components.js');
+    const index = read('index.html');
+    const data = read('assets/js/data-services.js');
+    assert.match(ui, /const SecretInput = \{/);
+    assert.match(ui, /navigator\.clipboard\.writeText/);
+    assert.match(ui, /`\$\{Math\.floor\(seconds \/ 60\)\}m\$\{seconds % 60\}s`/);
+    assert.match(index, /<secret-input v-model="settings\.apiKey"/);
+    assert.match(index, /<secret-input v-model="settings\.imageGenKey"/);
+    assert.match(data, /const isMemory = message\.role !== 'system' && isRoleMemoryContextContent\(message\.content\);/);
+    assert.match(data, /if \(isMemory \|\| recallCount > 0\)/);
 });

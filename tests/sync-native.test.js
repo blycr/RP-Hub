@@ -12,10 +12,12 @@ let registeredTag;
 vm.runInNewContext(source, { window, HTMLElement: class {},
     customElements: { define(tag) { registeredTag = tag; } } });
 
-test('native sync registers the Vue-recognized custom element', () => {
+test('native sync remains an unloaded maintenance module after the userscript cutover', () => {
     assert.equal(registeredTag, 'rphub-native-sync');
     const app = fs.readFileSync(path.join(__dirname, '../assets/js/app.js'), 'utf8');
-    assert.match(app, /compilerOptions\.isCustomElement = tag => tag === 'rphub-native-sync'/);
+    const index = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
+    assert.doesNotMatch(app, /compilerOptions\.isCustomElement = tag => tag === 'rphub-native-sync'/);
+    assert.doesNotMatch(index, /rphub-native-sync|rphub-sync-native\.js/);
 });
 
 test('native restore preserves local avatars and excludes legacy blob payloads', () => {

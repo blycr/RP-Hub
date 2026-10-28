@@ -760,13 +760,16 @@ ${closingInstruction}
 
 // --- Update announcement (keep this section at the bottom) ---
 window.RPHubLatestUpdate = Object.freeze({
-    id: 10222,
+    id: 10224,
     title: '网站公告',
     content: `
-### RP-Hub 2.0.3
+### RP-Hub 2.0.5
 
-- 快捷面板新增“输入混淆”，解决输入审查，无注意力与智商损耗（Gemini模型）
+- 密钥支持复制与查看
+- 优化了用量统计时间显示
+- 优化了导入聊天记录的速度
+- 修复了导入聊天记录时的卡死问题
 
-#### 更新时间：10/15/12:00
+#### 更新时间：10/21/16:09
     `
 });

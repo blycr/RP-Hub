@@ -971,6 +971,25 @@ label:is(:active, :focus-within) .settings-toggle::after { transition: transform
     transition: border-color var(--dur-2) ease, box-shadow var(--dur-2) ease, background-color var(--dur-2) ease;
 }
 .settings-view .settings-control--icon { padding-left: 2.75rem; }
+/* Key fields: copy and show/hide appear on the right while the field is in use. */
+.secret-input { position: relative; }
+.settings-view .secret-input input { padding-right: 4.75rem; }
+.secret-input__actions {
+    position: absolute;
+    top: 50%;
+    right: 0.5rem;
+    display: flex;
+    gap: 0.125rem;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-50%);
+    transition: opacity var(--dur-2) ease;
+}
+.secret-input:focus-within .secret-input__actions { opacity: 1; pointer-events: auto; }
+.secret-input__actions button { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: var(--r-sm); color: var(--c-text-4); }
+.secret-input__actions button:hover:not(:disabled) { background: var(--c-raised); color: var(--c-text); }
+.secret-input__actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+.secret-input__actions svg { width: 1.125rem; height: 1.125rem; }
 .settings-view button.settings-control { height: 2.875rem; }
 .settings-view textarea.settings-control { resize: vertical; }
 .settings-view .settings-control > svg { flex-shrink: 0; }

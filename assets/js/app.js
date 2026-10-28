@@ -31,6 +31,7 @@ const {
     PresetEditorModal,
     RegexEditorModal,
     RetryConfirmModal,
+    SecretInput,
     SettingsHelp,
     SettingsPageHeader,
     MemoryBackfillModal,
@@ -195,6 +196,7 @@ const app = createApp({
         RegexEditorModal,
         RetryConfirmModal,
         RollingText,
+        SecretInput,
         SettingsHelp,
         SettingsPageHeader,
         MemoryBackfillModal,
@@ -353,8 +355,6 @@ const app = createApp({
         const confirmCallback = ref(null);
         const showMemoryBackfillModal = ref(false);
         const isGenerating = ref(false);
-        const isRemoteGenerating = ref(false); // 新增：远程生成状态
-        const remoteEstimatedTime = ref(null); // 新增：远程预计时间
         const isReceiving = ref(false);
         const isThinking = ref(false);
         const activeToolContinuationMessageId = ref(null);
@@ -616,7 +616,6 @@ const app = createApp({
             immersiveMode: false,
             showLatestUsageBar: false,
             preventTruncation: false,
-            inputObfuscation: false,
             styleFilterEnabled: true,
             uiTemplateEnabled: false,
             uiTemplateModel: '',
@@ -649,29 +648,6 @@ const app = createApp({
         // RP-Hub-Sync dynamic API provider registry v3
         const apiAdapters = window.RPHubApiAdapters;
         if (!apiAdapters) throw new Error('RP-Hub API 协议适配器未加载');
-        const gatewayStatus = ref(window.RPHubApiClient.getGatewayStatus());
-        const gatewayUrlDraft = ref(gatewayStatus.value.url);
-        const gatewayOriginsDraft = ref(gatewayStatus.value.providerOrigins.join(', '));
-        const gatewayTokenDraft = ref('');
-        const saveGatewayConfig = () => {
-            try {
-                gatewayStatus.value = window.RPHubApiClient.configureGateway({
-                    url: gatewayUrlDraft.value,
-                    providerOrigins: gatewayOriginsDraft.value,
-                    token: gatewayTokenDraft.value,
-                });
-                gatewayTokenDraft.value = '';
-                showToast('网关已在本标签页启用', 'success');
-            } catch (error) {
-                showToast(error.message || '网关配置无效', 'error');
-            }
-        };
-        const disableGateway = () => {
-            window.RPHubApiClient.clearGatewayConfig();
-            gatewayStatus.value = window.RPHubApiClient.getGatewayStatus();
-            gatewayTokenDraft.value = '';
-            showToast('网关已停用', 'success');
-        };
         const CHAT_PROTOCOL_OPENAI_CHAT = apiAdapters.CHAT_PROTOCOL_OPENAI_CHAT;
         const CHAT_PROTOCOL_OPENAI_RESPONSES = apiAdapters.CHAT_PROTOCOL_OPENAI_RESPONSES;
         const EMBEDDING_PROTOCOL_OPENAI = apiAdapters.EMBEDDING_PROTOCOL_OPENAI;
@@ -685,7 +661,6 @@ const app = createApp({
             { value: EMBEDDING_PROTOCOL_NONE, label: '不启用向量' },
         ];
         const showApiProviderSelector = ref(false);
-        const selectedApiProviderId = ref(DEFAULT_API_PROVIDER_ID);
         const normalizeApiProviderUrl = apiAdapters.normalizeBaseUrl;
         const customApiProviderOptions = computed(() => Array.isArray(settings.customApiProviders)
             ? settings.customApiProviders
@@ -787,7 +762,6 @@ const app = createApp({
                 settings.apiProviderId = provider.id;
             }
 
-            selectedApiProviderId.value = provider.id;
             settings.apiUrl = provider.apiUrl || '';
             if (settings.apiKey && !settings.apiProviderKeys[provider.id]) {
                 settings.apiProviderKeys[provider.id] = settings.apiKey;
@@ -797,7 +771,6 @@ const app = createApp({
 
         const selectedApiProvider = computed(() => (
             getApiProviderById(settings.apiProviderId)
-            || getApiProviderById(selectedApiProviderId.value)
             || getApiProviderById(DEFAULT_API_PROVIDER_ID)
         ));
         const selectedProviderModes = computed(() => getProviderModes(selectedApiProvider.value?.id));
@@ -805,9 +778,6 @@ const app = createApp({
 
         const syncCurrentApiKeyToProvider = () => {
             const providerId = settings.apiProviderId || selectedApiProvider.value?.id || DEFAULT_API_PROVIDER_ID;
-            if (!settings.apiProviderKeys || typeof settings.apiProviderKeys !== 'object' || Array.isArray(settings.apiProviderKeys)) {
-                settings.apiProviderKeys = {};
-            }
             settings.apiProviderKeys[providerId] = settings.apiKey || '';
             const provider = getApiProviderById(providerId);
             if (provider && isCustomApiProviderId(providerId)) {
@@ -818,7 +788,6 @@ const app = createApp({
         const selectApiProvider = (provider) => {
             if (!provider) return;
             syncCurrentApiKeyToProvider();
-            selectedApiProviderId.value = provider.id;
             settings.apiProviderId = provider.id;
             settings.apiUrl = provider.apiUrl || '';
             settings.apiKey = settings.apiProviderKeys[provider.id] || '';
@@ -916,7 +885,6 @@ const app = createApp({
 
                 if (settings.apiProviderId === providerId) {
                     const fallback = getApiProviderById(DEFAULT_API_PROVIDER_ID) || apiProviderOptions[0];
-                    selectedApiProviderId.value = fallback.id;
                     settings.apiProviderId = fallback.id;
                     settings.apiUrl = fallback.apiUrl;
                     settings.apiKey = settings.apiProviderKeys[fallback.id] || '';
@@ -1326,20 +1294,20 @@ const app = createApp({
         function hasActiveToolContinuationWork() {
             return !!(activeToolContinuationPending.value || (
                 activeToolContinuationMessageId.value
-                && (isGenerating.value || isRemoteGenerating.value)
+                && isGenerating.value
             ));
         }
 
         const hasActiveToolInlineWork = computed(() => {
             if (activeToolHandoffPending.value || hasActiveToolContinuationWork() || activeToolQueueRunning.value) return true;
-            if (!isGenerating.value && !isRemoteGenerating.value) return false;
+            if (!isGenerating.value) return false;
             return chatHistory.value.some(msg => (
                 msg?.role === 'assistant'
                 && Array.isArray(msg.toolCalls)
                 && msg.toolCalls.some(toolCall => ['receiving', 'queued', 'running'].includes(toolCall?.status))
             ));
         });
-        const isConversationBusy = computed(() => isGenerating.value || isRemoteGenerating.value || hasActiveToolInlineWork.value);
+        const isConversationBusy = computed(() => isGenerating.value || hasActiveToolInlineWork.value);
 
         const presets = ref([]);
         // 抗截断只临时停用 COT，不改写用户保存的开关状态。
@@ -1405,8 +1373,17 @@ const app = createApp({
         const blockedStyleClausePattern = /(?:^|[，,；;])[^，,。！？!?；;\n*_]*(?:微微泛|因为用力|像在|风箱|手术刀|上扬|带着一种)[^，,。！？!?；;\n*_]*(?=(?:\*\*|__)?[ \t]*(?:$|[，,。！？!?；;\n]))/gm;
         const blockedStyleWordPattern = /极其/g;
         const quotedDialoguePattern = /(“[\s\S]*?”|『[\s\S]*?』|"[\s\S]*?")/g;
-        const standaloneRenderedContentPattern = /^(?:\s|<!--[\s\S]*?-->)*(?:```|<!doctype\b|<\?xml\b|<html\b|<(?:head|body|style|script|template|svg|canvas|iframe|div|section|article|aside|header|footer|main|nav|form|table|ul|ol|pre|p|img)\b)/i;
-        const isStandaloneRenderedContent = text => standaloneRenderedContentPattern.test(String(text || ''));
+        const standaloneRenderedContentPattern = /^(?:```|<!doctype\b|<\?xml\b|<html\b|<(?:head|body|style|script|template|svg|canvas|iframe|div|section|article|aside|header|footer|main|nav|form|table|ul|ol|pre|p|img)\b)/i;
+        const isStandaloneRenderedContent = (text) => {
+            let content = String(text || '').trimStart();
+            // Skip each leading comment once; the old repeated regex could backtrack exponentially.
+            while (content.startsWith('<!--')) {
+                const end = content.indexOf('-->', 4);
+                if (end < 0) return false;
+                content = content.slice(end + 3).trimStart();
+            }
+            return standaloneRenderedContentPattern.test(content);
+        };
         const loggedBlockedStyleFragments = new Set();
         const openStyleFilterMessageKey = ref('');
         const getStyleFilterMessageKey = (message, index) => String(message?.id || `message-${index}`);
@@ -2034,7 +2011,7 @@ const app = createApp({
 
         const scheduleChatHistorySave = () => {
             if (chatHistorySaveTimer) clearTimeout(chatHistorySaveTimer);
-            const delay = (isGenerating.value || isRemoteGenerating.value) ? 1500 : 300;
+            const delay = isGenerating.value ? 1500 : 300;
             chatHistorySaveTimer = setTimeout(() => {
                 chatHistorySaveTimer = null;
                 saveChatHistoryNow();
@@ -3512,7 +3489,7 @@ const app = createApp({
             return Math.max(0, predictedLength);
         });
         const summaryCompressionRate = computed(() => {
-            const floorCount = getPostprocessedChatMessages(chatHistory.value, { includeSystem: false }).length;
+            const floorCount = postprocessChatHistory(chatHistory.value, { includeSystem: false }).length;
             if (floorCount <= memorySettings.summaryKeepFloors) return null;
             return conversationBodyLength.value > 0
                 ? Math.max(0, Math.round((1 - summaryCompressedBodyLength.value / conversationBodyLength.value) * 100))
@@ -4916,10 +4893,9 @@ const app = createApp({
             const continueAssistantMessageId = options.continueAssistantMessageId || null;
             const continuationToolCallId = options.continuationToolCallId || null;
             const requestModel = settings.model;
-            const obfuscateInput = /gemini/i.test(String(requestModel || '')) && settings.inputObfuscation === true;
+            const obfuscateInput = /gemini/i.test(String(requestModel || ''));
             const latestUserMessage = [...chatHistory.value].reverse().find(message => message?.role === 'user');
             const latestUserIndex = chatHistory.value.indexOf(latestUserMessage);
-            let inputToolContent = '';
             const requestTools = activeToolDepth < ACTIVE_TOOL_MAX_AUTO_CONTINUE ? getEnabledActiveTools() : [];
 
             if (!currentCharacter.value) {
@@ -5227,11 +5203,6 @@ const app = createApp({
                         let content = stripUiTemplateContextInjection(parsedData.main);
                         if (!settings.uiTemplateEnabled || !settings.uiTemplateMainModelAnalysis) content = stripUiTemplateUpdateBlock(content);
                         content = stripMemoryCitations(stripDisabledImageGenContext(stripNextResponsePrompt(content)));
-                        // 仅把最新真实输入移到工具结果，图片说明和附加要求仍留在用户消息中。
-                        if (obfuscateInput && source === latestUserMessage && content.trim()) {
-                            inputToolContent = content;
-                            content = '读取 read_user_input 的返回内容，作为本轮用户输入继续回复。';
-                        }
                         const recentThinking = source.role === 'assistant' ? recentThinkingByMessage.get(source) : '';
                         if (recentThinking) content = `${wrapAnalysis(retainedThinkingTag, recentThinking)}${content}`;
                         if (source === openingSourceMessage && openingThinking) content = `${openingThinking}${content}`;
@@ -5294,16 +5265,6 @@ const app = createApp({
                     depth: array.length - 1 - index
                 })
             }));
-
-            // 在角色合并和正则之后插入完整配对，避免工具调用编号被后处理移除。
-            if (inputToolContent) {
-                const inputIndex = messages.findIndex(message => message.role === 'user'
-                    && message._sourceIndexes?.includes(latestUserIndex));
-                if (inputIndex !== -1) {
-                    messages.splice(inputIndex + 1, 0,
-                        ...buildUserInputToolMessages(inputToolContent, `call_${generateUUID()}`));
-                }
-            }
 
             let generatedAssistantMessageId = null;
             let assistantMessage = null;
@@ -5398,16 +5359,26 @@ const app = createApp({
                 }
                 if (requestSignal.aborted) throw createAbortReason();
 
+                // 最后再搬移整条用户消息，连同世界书、召回和本轮附加要求一起交给工具。
+                const inputIndex = obfuscateInput ? messages.findIndex(message => message.role === 'user'
+                    && message._sourceIndexes?.includes(latestUserIndex)) : -1;
+                if (inputIndex >= 0) {
+                    const inputMessage = messages[inputIndex];
+                    const [inputCall, inputResult] = buildUserInputToolMessages(inputMessage.content, `call_${generateUUID()}`);
+                    inputMessage.content = '读取 read_user_input 的返回内容，作为本轮用户输入继续回复。'
+                        + (isTruncationEnabled.value ? `(${BUILTIN_PROMPTS.replyToolInstruction.replace(/。$/, '')})` : '');
+                    for (const key of ['_worldInfoEntries', '_enhancedMemoryRecallCount']) {
+                        inputResult[key] = inputMessage[key];
+                        delete inputMessage[key];
+                    }
+                    messages.splice(inputIndex + 1, 0, inputCall, inputResult);
+                }
+
                 // 必须在正则、角色合并和记忆处理之后追加，保留 tool_call_id 及服务端签名。
                 messages.push(...activeToolMessages);
                 // 上下文查看器的数据只给弹窗用，长对话里整理一次要上百毫秒，等请求发出后再做。
                 const contextViewerInput = { messages, budgetedEntries, triggeredEntries, postprocessedChatHistory, worldInfoSettings };
-                setTimeout(() => {
-                    const contextViewerState = buildContextViewerState(contextViewerInput);
-                    lastContextMessages.value = contextViewerState.contextMessages;
-                    lastTriggeredWorldInfos.value = contextViewerState.triggeredWorldInfos;
-                }, 0);
-
+                const inputPrompt = inputIndex >= 0 ? messages[inputIndex].content : '';
                 const apiMessages = messages.map(({ role, name, content, tool_calls, tool_call_id, reasoning_content, reasoning, reasoning_details, extra_content }) => ({
                     role,
                     name,
@@ -5419,9 +5390,26 @@ const app = createApp({
                     ...(reasoning_details ? { reasoning_details } : {}),
                     ...(extra_content ? { extra_content } : {})
                 }));
+                const prepareRequest = () => {
+                    if (inputIndex >= 0) {
+                        // UUID 转成零宽字符，每次实际请求（含自动重试）生成新的前缀。
+                        const alphabet = '\u200B\u200C\u200D\u2060';
+                        const prefix = [...generateUUID().replace(/-/g, '')].map(char => {
+                            const value = parseInt(char, 16);
+                            return alphabet[value >> 2] + alphabet[value & 3];
+                        }).join('');
+                        messages[inputIndex].content = apiMessages[inputIndex].content = prefix + inputPrompt;
+                    }
+                    setTimeout(() => {
+                        const contextViewerState = buildContextViewerState(contextViewerInput);
+                        lastContextMessages.value = contextViewerState.contextMessages;
+                        lastTriggeredWorldInfos.value = contextViewerState.triggeredWorldInfos;
+                    }, 0);
+                };
                 const responseResult = await requestTrackedChatCompletion({
                     model: requestModel,
                     messages: apiMessages,
+                    onBeforeRequest: prepareRequest,
                     logResponse: true,
                     replyInTool: isTruncationEnabled.value,
                     tools: buildActiveToolDefinitions(requestTools),
@@ -5513,7 +5501,6 @@ const app = createApp({
                     wasCancelled = true;
                     showToast('生成已中止', 'info');
                     isGenerating.value = false;
-                    isRemoteGenerating.value = false;
                     isThinking.value = false;
                 }
                 if (targetMessage) {
@@ -6539,7 +6526,7 @@ const app = createApp({
             if (
                 activeToolContinuationMessageId.value === message?.id
                 && !activeToolContinuationHasResponse.value
-                && (isGenerating.value || isRemoteGenerating.value || activeToolContinuationPending.value)
+                && (isGenerating.value || activeToolContinuationPending.value)
             ) {
                 return toolCalls.find(toolCall => toolCall?.id === activeToolContinuationToolCallId.value) || null;
             }
@@ -6580,7 +6567,7 @@ const app = createApp({
             if (isLast && isThinking.value) return true;
             if (getCurrentThinkingToolCall(message)) return true;
             const cotInfo = parseCot(message.content || '');
-            if (isLast && (isGenerating.value || isRemoteGenerating.value) && cotInfo.cot && !cotInfo.isFinished) {
+            if (isLast && isGenerating.value && cotInfo.cot && !cotInfo.isFinished) {
                 return true;
             }
             return false;
@@ -6616,7 +6603,7 @@ const app = createApp({
         const getTimelineSteps = (message) => {
             const steps = [];
             const isLastMessage = chatHistory.value && chatHistory.value[chatHistory.value.length - 1] === message;
-            const isGeneratingMessage = isLastMessage && (isGenerating.value || isRemoteGenerating.value);
+            const isGeneratingMessage = isLastMessage && isGenerating.value;
             const cotInfo = parseCot(message.content || '');
 
             // 1. 初始原生思考
@@ -8905,8 +8892,8 @@ const app = createApp({
             showCharacterExportModal, openCharacterExportModal, confirmCharacterExport, // Character Export Modal
             updateModalRef, latestUpdateConfig,
             showConfirmModal, confirmMessage, modelMode, isGeminiModel, isTruncationEnabled, isPresetEnabled, chatModelSlots, selectChatModelSlot, reasoningEffortSlider, reasoningEffortLabel, // Export for template
-            isGenerating, isRemoteGenerating, remoteEstimatedTime, isReceiving, isThinking, hasActiveToolInlineWork, isConversationBusy, activeToolContinuationMessageId, activeToolContinuationHasResponse, userInput, pendingCardInteraction, clearPendingCardInteraction, pendingChatImages, pendingChatImageReadCount, isRecognizingImages, requestChatImageSelection, handleChatImageSelection, removePendingChatImage, modelSearchQuery, activeModelTag, modelTags, characterSearchQuery, filteredModels, filteredCharacters,
-            user, settings, gatewayStatus, gatewayUrlDraft, gatewayOriginsDraft, gatewayTokenDraft, saveGatewayConfig, disableGateway,
+            isGenerating, isReceiving, isThinking, hasActiveToolInlineWork, isConversationBusy, activeToolContinuationMessageId, activeToolContinuationHasResponse, userInput, pendingCardInteraction, clearPendingCardInteraction, pendingChatImages, pendingChatImageReadCount, isRecognizingImages, requestChatImageSelection, handleChatImageSelection, removePendingChatImage, modelSearchQuery, activeModelTag, modelTags, characterSearchQuery, filteredModels, filteredCharacters,
+            user, settings,
             apiProviderOptions, selectedApiProvider, selectedProviderModes, chatProtocolOptions, embeddingProtocolOptions, isCustomApiProvider, customApiProviderOptions, showApiProviderSelector, selectApiProvider, addCustomApiProvider, updateSelectedCustomApiProvider, updateSelectedProviderMode, deleteCustomApiProvider, getProviderDisplayName, migrateLegacyMemoryProviders, characters, currentCharacter, currentCharacterAvatar, currentCharacterIndex, switchingCharacterIndex, chatHistory, displayedChatMessages, handleChatScroll, presets, presetRoleOptions, fontSizeOptions, availableImageStyleOptions, imageModelOptions, imageSizeOptions, imageGenCountOptions, scopeOptions, uiTemplatePlacementOptions, worldInfoPositionOptions, getPresetRoleLabel, getPresetRoleDisplayLabel, getPresetRoleBadgeClass, getSortableItemKey, regexScripts, worldInfo,
             activeTools, activeToolAggressivenessOptions: ACTIVE_TOOL_AGGRESSIVENESS_OPTIONS, editingActiveTool, normalizeActiveTools, isWebActiveTool, getActiveToolDisplayDescription, getActiveToolResultCountMin, getActiveToolResultCountMax,
             getToolCallModeText, hasThinkingOrTools, isMessageThinkingOrRunning, isThinkingSummaryOpen, toggleThinkingSummary, markThinkingSummaryDetailOpened, getTimelineSteps,
@@ -9257,7 +9244,6 @@ const app = createApp({
 });
 
 // 公共弹窗部件需要全局注册，供其他弹窗组件内部直接复用。
-app.config.compilerOptions.isCustomElement = tag => tag === 'rphub-native-sync';
 app.component('ModalShell', ModalShell);
 app.component('ModalHeader', ModalHeader);
 app.mount('#app');
