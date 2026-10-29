@@ -1931,13 +1931,13 @@ const app = createApp({
                 hasOpenedCharacterManager.value = true;
             } else if (newView === 'generator') {
                 isGeneratorLoading.value = true;
-                generatorUrl.value = `./character/index.html?t=${Date.now()}`;
+                generatorUrl.value = './character/index.html';
             } else if (newView === 'square') {
                 isSquareLoading.value = true;
                 squareUrl.value = `https://rphforum.zeabur.app/?t=${Date.now()}`;
             } else if (newView === 'novel') {
                 isNovelLoading.value = true;
-                novelUrl.value = `./novel/index.html?t=${Date.now()}`;
+                novelUrl.value = './novel/index.html';
             } else {
                 const sortable = {
                     presets: ['presets-list', presets],
@@ -8412,13 +8412,26 @@ const app = createApp({
             inputBox.value?.focus();
         };
 
+        const scheduleBackgroundRefresh = (tasks) => {
+            const run = () => tasks.forEach(task => {
+                try { Promise.resolve(task()).catch(error => console.warn('Deferred startup task failed:', error)); }
+                catch (error) { console.warn('Deferred startup task failed:', error); }
+            });
+            if (typeof window.requestIdleCallback === 'function') {
+                window.requestIdleCallback(run, { timeout: 2500 });
+            } else {
+                setTimeout(run, 250);
+            }
+        };
+
         // Lifecycle
         onMounted(async () => {
             document.addEventListener('fullscreenchange', syncChatFullscreenState);
             document.addEventListener('webkitfullscreenchange', syncChatFullscreenState);
 
             await loadData();
-            fetchQuota(); // Fetch quota after saved settings are loaded
+            scheduleBackgroundRefresh([fetchQuota]); // Run after first paint and saved settings load
+
 
             updateModalRef.value?.check(); // 必须在 loadData 之后检查，否则同步存储尚未加载
 
@@ -8619,10 +8632,7 @@ const app = createApp({
                 selectCharacter(0);
             }
 
-            fetchModels();
-
-            // Initial Status Check
-            checkAllStatuses();
+            scheduleBackgroundRefresh([fetchModels, checkAllStatuses]); // Keep first interaction responsive
 
             // --- Mobile Keyboard Adaptation (VisualViewport) ---
             if (window.visualViewport) {
@@ -8650,6 +8660,7 @@ const app = createApp({
                     showApiProviderSelector.value = false;
                 }
             });
+
         });
 
         onBeforeUnmount(() => {
@@ -9251,3 +9262,4 @@ const app = createApp({
 app.component('ModalShell', ModalShell);
 app.component('ModalHeader', ModalHeader);
 app.mount('#app');
+requestAnimationFrame(() => window.RPHubBoot?.ready());

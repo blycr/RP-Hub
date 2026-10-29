@@ -136,7 +136,7 @@ html:-webkit-full-screen #app .app-main {
         radial-gradient(60% 50% at 28% 18%, rgb(var(--primary-200) / 0.55), transparent 70%),
         radial-gradient(50% 45% at 80% 88%, rgba(128, 196, 186, 0.28), transparent 70%),
         var(--c-canvas);
-    animation: entry-screen-out 0.7s var(--ease-in-out) 1.5s backwards;
+    transition: opacity 0.24s var(--ease-out), visibility 0.24s;
 }
 
 .entry-transition-brand {
@@ -147,6 +147,46 @@ html:-webkit-full-screen #app .app-main {
     color: var(--c-text);
     animation: entry-brand 2.2s var(--ease-out) 0.05s backwards;
 }
+
+.entry-transition-status {
+    margin-top: 0.75rem;
+    color: var(--c-text-2);
+    font-size: 0.8125rem;
+    letter-spacing: 0.04em;
+}
+
+.entry-transition-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.9rem;
+    pointer-events: auto;
+}
+
+.entry-transition-actions[hidden] { display: none; }
+
+.entry-transition-actions button {
+    padding: 0.55rem 0.85rem;
+    border: 1px solid var(--c-border);
+    border-radius: var(--r-md);
+    background: var(--c-surface);
+    color: var(--c-text);
+    font-size: 0.8125rem;
+    font-weight: 600;
+}
+
+.entry-transition-actions button:hover {
+    border-color: var(--c-accent-edge);
+    background: var(--c-accent-soft);
+}
+
+#rphub-boot-shell[data-state="ready"] {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+#rphub-boot-shell[data-state="error"] { pointer-events: auto; }
+#rphub-boot-shell[data-state="error"] .entry-transition-book { animation: none; }
 
 .entry-transition-book {
     position: relative;

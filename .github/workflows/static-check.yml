@@ -1,0 +1,37 @@
+name: Static product checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out product
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build fixed static assets
+        run: npm run build:static
+      - name: Verify generated output is committed
+        run: git diff --exit-code -- package-lock.json assets/vendor assets/css/tailwind-source.css tailwind.config.cjs
+      - name: Check static delivery contract
+        run: npm run check:static
+      - name: Install mobile browser
+        run: npx playwright-core install chromium
+      - name: Run product tests
+        run: npm test
+      - name: Run mobile slow-network smoke test
+        shell: bash
+        run: RPHUB_CHROMIUM_PATH=$(find /home/runner/.cache/ms-playwright -path '*/chrome-linux*/chrome' -type f -print -quit) npm run test:mobile

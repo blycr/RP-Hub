@@ -28,7 +28,7 @@ GitHub Pages 已绑定正式域名。2026-10-28 的隔离 Chromium 验证首页�
 | `assets/js/rphub-sync-*.js` | 原生同步的过渡维护源码；主页面不加载，跨设备同步继续由已安装用户脚本负责 |
 | `gateway/` | 独立、可选的受控 Cloudflare Worker 模型请求服务源码；主页面不加载，不自动转发请求 |
 | `character/index.html`、`novel/index.html` | 将工坊和小说页的请求接入选定供应商及受限的父子页面配置桥接 |
-| `assets/js/built-in-content.js`、`core-utils.js`、`data-services.js`、`runtime-services.js`、`tailwind-theme.js`、`assets/css/` | 跟随上游 2.0.5 的公告、记忆引用、渲染、用量统计及主题；对未采用的明文云备份调整公告措辞 |
+| `assets/js/built-in-content.js`、`core-utils.js`、`data-services.js`、`runtime-services.js`、`assets/css/`、`tailwind.config.cjs`、`assets/vendor/` | 跟随上游 2.0.5 的公告、记忆引用、渲染、用量统计及主题；关键依赖按锁定版本构建到本地，Tailwind CSS 随后生成 |
 | `CNAME`、`favicon.svg`、`.gitignore` | 正式域名、定制图标与本地文件忽略规则 |
 | `README.md`、`MAINTENANCE.md` | 直接在本仓库说明定制功能和维护边界 |
 
@@ -92,6 +92,27 @@ OpenCode Go 的路径按官方文档区分：模型列表为 `/inference/go/v1/m
 
 验证使用一次最小真实 Chat Completions 和一次最小真实 Responses 请求，均由 OpenCode Go 返回 HTTP 200；无效测试 Key 在带会话头时返回 401，不带返回原先的 400。测试 Key 未写入仓库，临时响应已删除。回归测试明确覆盖 Chat Completions、Responses、模型列表和第三方 origin 不添头。
 
+## 2026-10-29 移动端加载与恢复优化
+
+正式站此前在移动端慢网下会同步等待 Tailwind Play CDN、Vue、marked、DOMPurify 和 Sortable；首页随后用 `document.write` 串行下载本地脚本，遮罩又在固定 1.5 秒后消失，因此 CDN 失败或 CPU 受限时会出现长时间白屏。现改为：
+
+- 用 `package-lock.json` 固定 Vue 3.5.44、marked 18.1.2、DOMPurify 3.4.17、SortableJS 1.15.7、localForage 1.10.0、DaisyUI 4.7.2 和 Tailwind 3.4.17。
+- `npm run build:static` 将关键运行库复制到 `assets/vendor/`，并生成约 180 KB 的已裁剪 `tailwind.css`；三个页面只加载本地资源。
+- 首页二次加载顺序改为按顺序执行的 `defer` 脚本，不再使用 `document.write` 或每次请求变化的本地 `Date.now()` 缓存参数。
+- `assets/js/boot.js` 在 Vue 挂载完成前保持可见启动状态；脚本失败或超时后显示明确的失败信息、重新加载与清理网站缓存按钮，不再无限白屏。
+- 额度、模型列表和 API 状态检查延后到首次界面完成之后，通过 `requestIdleCallback`（带 2.5 秒兜底）运行；本地工坊和小说 iframe 改用稳定 URL。
+
+复现命令：
+
+```bash
+npm ci
+npm run build:static
+npm run check:static
+npm test
+RPHUB_CHROMIUM_PATH=/path/to/chrome npm run test:mobile
+```
+
+`npm test` 本轮 31/31 通过；本地移动端冒烟在 390×844、300 ms 延迟、1.1 Mbps 下确认首页、工坊与小说页均挂载，均无关键 CDN 请求或页面错误。兼容性要求是 Node.js 22；已提交构建产物，因此 GitHub Pages 不需要执行第二次构建。每次上游更新都必须重新运行以上门禁，避免覆盖本地资源和启动修复。
 ## 2026-10-28 上游 2.0.5 适配
 
 从已适配的 `0c1c044` 审查上游 `49c94e4..cd8f2a6`，范围包含 2.0.4 和 2.0.5。采用 Gemini 自动输入混淆：先完成世界书、增强记忆和附加要求注入，再将整条最新用户消息搬入成对的 `read_user_input` 工具交换；共享请求客户端的 `onBeforeRequest` 在每次实际请求前生成新的零宽前缀，自动重试也会更新。迁移世界书和增强记忆元数据到工具结果，修正上下文查看器不因召回附加内容改变原消息角色，并采用密钥复制/显示、长请求时长显示、渲染分支防回溯修正和上游 2.0.5 公告条目。

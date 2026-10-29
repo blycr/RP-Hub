@@ -56,12 +56,12 @@ Roleplay Hub 致力于提供流畅、私密且功能强大的本地化AI Rolepla
 
 ## 快速开始 (Quick Start)
 
-本项目无需复杂的 Node.js 环境或依赖安装，即开即用！
+源码使用 Node.js 22 构建固定的前端依赖；已经发布到 `main` 的站点直接使用仓库内的构建产物，访客无需安装 Node.js。
 
 ### 1. 下载与运行
 1. 点击项目主页绿色的 `Code` 按钮，选择 `Download ZIP`。
 2. 将下载的 ZIP 压缩包解压到您的本地任意文件夹中。
-3. 双击打开 `index.html` 文件，可使用本地角色管理等功能；需要原生 GitHub 同步或模型网关时，请使用可信的 HTTPS 站点地址。
+3. 开发或验证时先运行 `npm ci`、`npm run build:static`，再通过静态服务器打开页面。`index.html` 仍需由 HTTP(S) 静态服务器提供；`file://` 直接打开不是受支持的运行方式。
 
 *(注：本地文件的 `null` Origin 不能用于需要精确 CORS 许可的 GitHub 同步或模型网关；本地服务器也不会自动获得生产服务的跨域许可。)*
 
@@ -115,8 +115,10 @@ Roleplay-Hub/
 ├── novel/                         # 墨韵 · 造梦
 │   └── index.html
 ├── assets/
+│   ├── vendor/                    # 构建生成的固定版本前端资源（提交到仓库）
 │   ├── css/
 │   │   ├── styles.css             # 主页面样式
+│   │   ├── tailwind-source.css    # Tailwind 构建入口
 │   │   └── theme.css              # 三个页面共用的主题变量与暗色模式
 │   └── js/
 │       ├── built-in-content.js    # 默认预设、模式提示词、画师串与更新公告
@@ -124,7 +126,6 @@ Roleplay-Hub/
 │       ├── api-utils.js           # 上游原生请求客户端，扩展了 Responses 与工具调用路由
 │       ├── data-services.js       # 存储、记忆、上下文、分支与 UI 状态
 │       ├── runtime-services.js    # API 请求、消息渲染与运行状态
-│       ├── tailwind-theme.js      # 三个页面共用的 Tailwind 主题配置
 │       ├── update-check.js        # 上游更新检查客户端；本定制版未配置其远程入口
 │       ├── ui-components.js       # 选择器、侧边栏、弹窗与页面组件
 │       ├── rphub-api-adapters.js  # 本定制版的协议适配器
@@ -144,10 +145,21 @@ Roleplay-Hub/
 - 修改默认预设、各模式提示词、生图画师串或工具说明时，统一编辑 `built-in-content.js`。
 - 更新公告固定放在 `built-in-content.js` 最底部，方便查找和替换。
 - 可复用界面统一放在 `ui-components.js`，业务数据处理放在 `data-services.js`。
-- 项目没有构建步骤，修改后刷新浏览器即可验证。
+- 修改依赖、类名或页面后运行 `npm run build:static`；提交 `package-lock.json` 与 `assets/vendor/` 的生成结果。运行 `npm run check:static` 和 `npm test` 后再验证移动端。
+- 页面不得重新引入 Tailwind Play CDN、`unpkg`、`jsDelivr` 运行时依赖或 `document.write` 加载器；启动失败时由 `assets/js/boot.js` 提供重试与清理本站缓存入口。
 
 ---
 
+## 构建与自动检查
+
+产品站是静态站点，但关键前端依赖已经固定并保存于仓库，避免手机在公共 CDN 波动时白屏。首次检出或升级依赖后运行：
+
+```powershell
+npm ci --proxy=socks5h://127.0.0.1:7890
+npm run verify
+```
+
+`npm run verify` 会重新生成 `assets/vendor/` 和 `assets/css/tailwind.css`，检查三个页面没有外部关键 CDN、`document.write` 或不稳定的本地缓存参数，然后运行产品与网关测试。`npm run test:mobile` 使用 Chromium 在 390×844、慢网和 CPU 限速下验证首页、工坊及小说页挂载；本地需要设置 `RPHUB_CHROMIUM_PATH`，GitHub Actions 会自动安装浏览器并执行。已提交构建产物，因此发布不依赖构建机、额外 secret 或手工部署步骤。
 ## 协议与许可 (License)
 
 本项目严格遵守以下开源协议：

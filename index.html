@@ -4,7 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <link rel="icon" href="favicon.svg" type="image/svg+xml">
-    <script src="assets/js/theme.js"></script>
+    <script src="assets/js/theme.js" data-cfasync="false"></script>
+    <script src="assets/js/boot.js" data-cfasync="false"></script>
     <meta name="viewport"
         content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
     <!-- rphub-update-api disabled by RP-Hub-Sync (owner opt-out); see RP-Hub-Sync README -->
@@ -13,19 +14,13 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <!-- Fonts load without blocking first paint; text swaps in once they arrive. -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400..700&family=JetBrains+Mono:wght@400..600&family=Lora:ital,wght@0,400..700;1,400..700&family=Noto+Serif+SC:wght@600..700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
-    <script>
-        // Cache-bust local assets so updates appear without a hard refresh.
-        (function (stamp) {
-            document.write('<script src="assets/js/tailwind-theme.js?v=' + stamp + '"><\/script>'
-                + '<link rel="stylesheet" href="assets/css/theme.css?v=' + stamp + '">'
-                + '<link rel="stylesheet" href="assets/css/styles.css?v=' + stamp + '">');
-        })(Date.now());
-    </script>
+    <link rel="stylesheet" href="assets/css/theme.css" data-cfasync="false">
+    <link rel="stylesheet" href="assets/vendor/tailwind.css" data-cfasync="false">
+    <link rel="stylesheet" href="assets/css/styles.css" data-cfasync="false">
+    <script src="assets/vendor/vue.global.prod.js" data-cfasync="false"></script>
+    <script src="assets/vendor/marked.umd.js"></script>
+    <script src="assets/vendor/purify.min.js"></script>
+    <script src="assets/vendor/Sortable.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-900 font-sans selection:bg-primary-200 selection:text-primary-900">
     <svg aria-hidden="true" style="display: none">
@@ -57,7 +52,7 @@
             </path>
         </symbol>
     </svg>
-    <div class="entry-transition" aria-hidden="true">
+    <div id="rphub-boot-shell" class="entry-transition" data-state="loading" role="status" aria-live="polite">
         <div class="entry-transition-brand">
             <div class="entry-transition-book">
                 <svg viewBox="0 0 64 48" fill="none" aria-hidden="true">
@@ -73,6 +68,11 @@
             <div class="entry-transition-logo">
                 <span class="entry-logo-rp">RP</span>
                 <span class="entry-logo-hub">HUB</span>
+            </div>
+            <p class="entry-transition-status" data-boot-status>正在加载 RP Hub…</p>
+            <div class="entry-transition-actions" data-boot-actions hidden>
+                <button type="button" data-boot-action="reload">重新加载</button>
+                <button type="button" data-boot-action="clear-cache">清理网站缓存</button>
             </div>
         </div>
     </div>
@@ -2601,14 +2601,15 @@
 
     </div>
 
-    <script>
-        (function (stamp) {
-            ['built-in-content', 'core-utils', 'api-utils', 'data-services', 'runtime-services',
-                'update-check', 'ui-components', 'rphub-api-adapters', 'app'].forEach(name => {
-                document.write('<script src="assets/js/' + name + '.js?v=' + stamp + '"><\/script>');
-            });
-        })(Date.now());
-    </script>
+    <script src="assets/js/built-in-content.js" defer></script>
+    <script src="assets/js/core-utils.js" defer></script>
+    <script src="assets/js/api-utils.js" defer></script>
+    <script src="assets/js/data-services.js" defer></script>
+    <script src="assets/js/runtime-services.js" defer></script>
+    <script src="assets/js/update-check.js" defer></script>
+    <script src="assets/js/ui-components.js" defer></script>
+    <script src="assets/js/rphub-api-adapters.js" defer></script>
+    <script src="assets/js/app.js" defer></script>
 </body>
 
 </html>

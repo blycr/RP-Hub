@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <link rel="icon" href="../favicon.svg" type="image/svg+xml">
-    <script src="../assets/js/theme.js"></script>
+    <script src="../assets/js/theme.js" data-cfasync="false"></script>
     <meta name="viewport"
         content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>角色卡工坊</title>
@@ -12,18 +12,17 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <!-- Fonts load without blocking first paint; text swaps in once they arrive. -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400..700&family=JetBrains+Mono:wght@400..600&family=Lora:ital,wght@0,400..700;1,400..700&family=Noto+Serif+SC:wght@600..700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.7.2/dist/full.min.css" rel="stylesheet" type="text/css" />
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+    <script src="../assets/vendor/vue.global.prod.js"></script>
+    <script src="../assets/vendor/localforage.min.js"></script>
+    <script src="../assets/vendor/marked.umd.js"></script>
+    <script src="../assets/vendor/purify.min.js"></script>
     <script src="../assets/js/built-in-content.js"></script>
     <script src="../assets/js/core-utils.js"></script>
     <!-- RP-Hub-Sync API adapter runtime -->
-    <script src="../assets/js/rphub-api-adapters.js"></script>
     <script src="../assets/js/api-utils.js"></script>
+    <script src="../assets/js/rphub-api-adapters.js"></script>
     <link rel="stylesheet" href="../assets/css/theme.css">
+    <link rel="stylesheet" href="../assets/vendor/tailwind.css">
     <style>
         :root {
             --app-visual-height: 100vh;
@@ -338,16 +337,6 @@
             100% { stroke-dasharray: 90, 150; stroke-dashoffset: -124; }
         }
     </style>
-    <script src="../assets/js/tailwind-theme.js"></script>
-    <script>
-        // DaisyUI owns the workshop's semantic colors (tokens live in theme.css).
-        (function ({ extend }) {
-            const daisy = token => `oklch(var(--${token}) / <alpha-value>)`;
-            Object.assign(extend.colors, { primary: daisy('p'), secondary: daisy('s'), accent: daisy('a') });
-            extend.textColor.primary = daisy('p');
-            tailwind.config.future = { hoverOnlyWhenSupported: true };
-        })(tailwind.config.theme);
-    </script>
 </head>
 
 <body class="flex flex-col overflow-hidden bg-base-200/30">
@@ -2379,7 +2368,7 @@ You are carrying out a fictional character card creation and editing task. Act a
                         textContent = fullText.replace(htmlMatch[0], '').trim();
                     } else {
                         // 如果没有检测到 HTML 块，则提供一个基础的 HTML 结构，以便注入样式和脚本并显示正文
-                        uiHTML = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"><script src="https://cdn.tailwindcss.com"></` + `script></head><body class="bg-base-100 p-4"></body></html>`;
+                        uiHTML = `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"><link rel="stylesheet" href="../assets/vendor/tailwind.css"></head><body class="bg-base-100 p-4"></body></html>`;
                         textContent = fullText;
                     }
 

@@ -86,7 +86,6 @@ RP-Hub/
 │       ├── api-utils.js           # HTTP, streaming, tool calls, and empty-response retries
 │       ├── data-services.js       # Storage, memory, context, branches, and UI state
 │       ├── runtime-services.js    # Message rendering, usage tracking, and storage management
-│       ├── tailwind-theme.js      # Shared Tailwind config; colors read theme.css tokens
 │       ├── theme.js               # Theme persistence and embedded page synchronization
 │       ├── update-check.js        # Optional remote version checks
 │       ├── ui-components.js       # Navigation, selectors, dialogs, and page components
@@ -110,6 +109,10 @@ Set the service URL in `rphub-update-api` in `index.html`; leave it empty to dis
 Deploying the service requires Node.js 20 or later. See [`presence-server/README.md`](./presence-server/README.md) for details. You do not need to deploy it to use the main webpage. If you maintain your own fork, also change the version file URL read by the service to avoid receiving update notifications for the upstream project.
 
 ---
+
+## Build and Automated Checks
+
+The product remains a static site, but its critical browser dependencies are pinned and committed so mobile users do not depend on public CDNs. After checkout or a dependency change, run `npm ci`, `npm run verify`, and `npm run test:mobile` (set `RPHUB_CHROMIUM_PATH` locally). Verification rebuilds `assets/vendor/` and the minimized Tailwind stylesheet, rejects direct critical CDN use, `document.write`, or unstable local cache parameters, and runs the product and gateway tests. The mobile check runs at 390×844 with throttled networking and CPU. GitHub Actions installs Chromium and repeats these checks. Generated files are committed, so GitHub Pages needs no build tool, extra secret, or manual deployment step.
 
 ## License
 
