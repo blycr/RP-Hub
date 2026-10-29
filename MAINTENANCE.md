@@ -124,6 +124,15 @@ RPHUB_CHROMIUM_PATH=/path/to/chrome npm run test:mobile
 首次修复曾错误地在 `memorySettings` 初始化之前访问它，导致 Vue 白屏；现已通过显式传入已初始化的状态修复，并把供应商清理与删除后刷新加入回归测试。历史 Token 用量记录属于过去使用流水，默认保留，不视为当前供应商配置。
 
 此后每次上游更新都应保留 `pruneDanglingProviderState`、初始化顺序和删除后刷新行为。若上游改写供应商设置、模型绑定或页面初始化结构，必须运行产品测试并人工复核删除、刷新、角色工坊和小说页同步。
+## 2026-10-29 旧供应商迁移与子页面同步
+
+旧 `custom` / `custom2` 供应商现在只在其 ID 仍被当前供应商或聊天、快速槽、UI 模板、识图、总结、向量模型绑定时迁移；迁移会生成稳定的 `custom-custom` / `custom-custom2` ID，同步移动 URL、Key、协议模式和全部绑定，然后原子保存并写入 `providerMigrationVersion: 2`。没有被引用的旧 ID、旧 URL、旧 Key 会删除，不会因旧字段存在而在刷新后复活。
+
+供应商设置变化时，主页会向已打开的小说页发送 `RPHUB_API_SETTINGS_UPDATED` 快照。小说页只接受 `event.source === window.parent` 且 `event.origin === location.origin` 的消息，替换供应商列表并清空旧模型缓存；角色工坊继续使用原有 `SYNC_SETTINGS` 桥接。模型列表刷新本身仍覆盖全部已配置供应商，`apiProviderId` 及其聊天、工具调用、Responses、Embeddings 路由未改。
+
+首页、工坊和小说页的所有本地外链脚本添加 `data-cfasync="false"`，避免 Cloudflare Rocket Loader 二次调度关键依赖。`cloudflareinsights.com/.../beacon.min.js` 的 `ERR_BLOCKED_BY_CLIENT`、Permissions-Policy 和 WebMCP 提示属于浏览器扩展、Cloudflare 或 Chromium 通知，不是应用异常；无需为此新增“清除全部缓存”按钮或关闭站点数据。
+
+验证：JavaScript 与三个页面的内联脚本语法通过，外链脚本标记检查通过，静态检查通过，产品与网关测试 33/33 通过。新增回归测试覆盖持久迁移版本、旧供应商清理、同源父窗口更新校验。真实上游供应商凭据、现有 IndexedDB 配置和用户实际设备测试仍由用户执行；若上游重写供应商初始化或消息桥接，应重新运行这些门禁并保留上述不变式。
 ## 2026-10-28 上游 2.0.5 适配
 
 从已适配的 `0c1c044` 审查上游 `49c94e4..cd8f2a6`，范围包含 2.0.4 和 2.0.5。采用 Gemini 自动输入混淆：先完成世界书、增强记忆和附加要求注入，再将整条最新用户消息搬入成对的 `read_user_input` 工具交换；共享请求客户端的 `onBeforeRequest` 在每次实际请求前生成新的零宽前缀，自动重试也会更新。迁移世界书和增强记忆元数据到工具结果，修正上下文查看器不因召回附加内容改变原消息角色，并采用密钥复制/显示、长请求时长显示、渲染分支防回溯修正和上游 2.0.5 公告条目。
