@@ -604,6 +604,7 @@ const app = createApp({
             visionModelProviderId: '',
             customApiProviders: [],
             apiProviderModes: {},
+            providerMigrationVersion: 0,
             customApiUrl: '',
             model: DEFAULT_API_CONFIG.qualityModel,
             contextSize: MAX_CONTEXT_SIZE,
@@ -735,33 +736,66 @@ const app = createApp({
             availableModels.value = availableModels.value.filter(model => validIds.has(model.providerId));
         };
 
-        const migrateLegacyCustomApiProviders = () => {
+        const migrateLegacyCustomApiProviders = (targetMemorySettings = null) => {
+            if (settings.providerMigrationVersion >= 2) return false;
+            settings.providerMigrationVersion = 2;
             const providers = Array.isArray(settings.customApiProviders)
                 ? settings.customApiProviders.filter(provider => provider && typeof provider === 'object')
                 : [];
-            const providerIds = new Set(providers.map(provider => provider.id));
-            const referencedProviderIds = new Set([
-                settings.apiProviderId,
-                settings.modelProviderId,
-                settings.qualityModelProviderId,
-                settings.balancedModelProviderId,
-            settings.fastModelProviderId,
-            settings.uiTemplateModelProviderId,
-            settings.visionModelProviderId,
-            ].filter(Boolean));
-            const legacyProviders = [
-                { id: 'custom', name: '自定义', apiUrl: settings.customApiUrl || '' },
-                { id: 'custom2', name: '自定义2', apiUrl: settings.customApiUrl2 || '' },
-            ];
-            legacyProviders.forEach(provider => {
-                // Legacy URL and key fields are migration inputs, not proof that the provider is still selected.
-                if (!providerIds.has(provider.id) && referencedProviderIds.has(provider.id)) {
-                    providers.push(provider);
-                    providerIds.add(provider.id);
+            const legacyDefinitions = {
+                custom: { name: '自定义', apiUrl: settings.customApiUrl || '' },
+                custom2: { name: '自定义2', apiUrl: settings.customApiUrl2 || '' },
+            };
+            const bindingDefinitions = [
+                [settings, 'apiProviderId'],
+                [settings, 'modelProviderId'],
+                [settings, 'qualityModelProviderId'],
+                [settings, 'balancedModelProviderId'],
+                [settings, 'fastModelProviderId'],
+                [settings, 'uiTemplateModelProviderId'],
+                [settings, 'visionModelProviderId'],
+                [targetMemorySettings, 'classicProviderId'],
+                [targetMemorySettings, 'embeddingProviderId'],
+            ].filter(([target]) => target);
+
+            Object.entries(legacyDefinitions).forEach(([legacyId, definition]) => {
+                const existingIndex = providers.findIndex(provider => provider.id === legacyId);
+                const bindings = bindingDefinitions.filter(([target, key]) => target[key] === legacyId);
+                if (!bindings.length) {
+                    if (existingIndex >= 0) providers.splice(existingIndex, 1);
+                    delete settings.apiProviderKeys[legacyId];
+                    delete settings.apiProviderModes[legacyId];
+                    return;
                 }
+                const existing = existingIndex >= 0 ? providers[existingIndex] : null;
+                const baseId = 'custom-' + legacyId;
+                let migratedId = baseId;
+                let suffix = 2;
+                while (providers.some(provider => provider.id === migratedId)) migratedId = baseId + '-' + suffix++;
+                const legacyKey = String(settings.apiProviderKeys?.[legacyId]
+                    || (settings.apiProviderId === legacyId ? settings.apiKey : '') || '').trim();
+                const migratedProvider = {
+                    id: migratedId,
+                    name: String(existing?.name || definition.name).trim() || definition.name,
+                    apiUrl: normalizeApiProviderUrl(existing?.apiUrl || definition.apiUrl || ''),
+                };
+                if (existingIndex >= 0) providers.splice(existingIndex, 1);
+                providers.push(migratedProvider);
+                bindings.forEach(([target, key]) => { target[key] = migratedId; });
+                if (legacyKey) settings.apiProviderKeys[migratedId] = legacyKey;
+                settings.apiProviderModes[migratedId] = normalizeProviderMode(settings.apiProviderModes?.[legacyId]);
+                if (settings.apiProviderId === migratedId) {
+                    settings.apiUrl = migratedProvider.apiUrl;
+                    settings.apiKey = legacyKey;
+                }
+                delete settings.apiProviderKeys[legacyId];
+                delete settings.apiProviderModes[legacyId];
             });
 
+            delete settings.customApiUrl;
+            delete settings.customApiUrl2;
             settings.customApiProviders = providers;
+            return true;
         };
 
         const normalizeApiProviderSettings = () => {
@@ -771,7 +805,6 @@ const app = createApp({
             if (!settings.apiProviderModes || typeof settings.apiProviderModes !== 'object' || Array.isArray(settings.apiProviderModes)) {
                 settings.apiProviderModes = {};
             }
-            migrateLegacyCustomApiProviders();
 
             const builtinIds = new Set(apiProviderOptions.map(provider => provider.id));
             const seenIds = new Set();
@@ -2308,6 +2341,10 @@ const app = createApp({
                 if (savedMemorySettings) Object.assign(memorySettings, savedMemorySettings);
                 normalizeMemorySettings();
                 migrateLegacyMemoryProviders(savedSettings || {});
+                if (migrateLegacyCustomApiProviders(memorySettings)) {
+                    await saveData({ saveMemories: false, saveCharacters: false });
+                }
+                normalizeApiProviderSettings();
                 pruneDanglingProviderState({ includeMemory: true, memorySettings });
 
                 const savedTokenUsageHistory = await getStoredValue('token_usage_history');
@@ -3893,10 +3930,9 @@ const app = createApp({
                     allModels.push(...result.value);
                 } else {
                     failedCount++;
-                    console.warn(
-                        `Failed to fetch models from ${configuredProviders[index].provider.name}:`,
-                        result.reason
-                    );
+                    const providerName = configuredProviders[index].provider.name;
+                    const statusText = String(result.reason?.message || result.reason || '请求失败');
+                    console.warn(`Failed to fetch models from ${providerName}: ${statusText}`);
                 }
             });
             availableModels.value = allModels;

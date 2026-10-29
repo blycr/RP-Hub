@@ -7,12 +7,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>小说生成</title>
     <!-- Vue 3 -->
-    <script src="../assets/vendor/vue.global.prod.js"></script>
+    <script src="../assets/vendor/vue.global.prod.js" data-cfasync="false"></script>
     <!-- Marked for Markdown rendering -->
-    <script src="../assets/vendor/marked.umd.js"></script>
-    <script src="../assets/js/built-in-content.js"></script>
-    <script src="../assets/js/core-utils.js"></script>
-    <script src="../assets/js/api-utils.js"></script>
+    <script src="../assets/vendor/marked.umd.js" data-cfasync="false"></script>
+    <script src="../assets/js/built-in-content.js" data-cfasync="false"></script>
+    <script src="../assets/js/core-utils.js" data-cfasync="false"></script>
+    <script src="../assets/js/api-utils.js" data-cfasync="false"></script>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2238,50 +2238,39 @@
                     if (shouldSave) saveData();
                 };
 
+                const applyProviderSnapshot = snapshot => {
+                    const parentSettings = snapshot.settings || {};
+                    const providers = Array.isArray(snapshot.providers) ? snapshot.providers : [];
+                    apiProviders.value = providers.map(provider => ({
+                        ...provider,
+                        chatProtocol: parentSettings.apiProviderModes?.[provider.id]?.chat
+                            || provider.chatProtocol || 'openai-chat-completions',
+                        apiKey: parentSettings.apiProviderKeys?.[provider.id]
+                            || (parentSettings.apiProviderId === provider.id ? parentSettings.apiKey : '')
+                            || provider.apiKey || '',
+                    }));
+                    availableModels.value = [];
+                    globalSettings.value.providers = JSON.parse(JSON.stringify(apiProviders.value));
+                    const activeProvider = apiProviders.value.find(provider => provider.id === parentSettings.apiProviderId)
+                        || apiProviders.value.find(provider => provider.apiKey)
+                        || null;
+                    if (activeProvider) selectApiProvider(activeProvider, false);
+                    else settings.value = { ...settings.value, providerId: '', apiUrl: '', apiKey: '' };
+                };
+                const applyParentProviderUpdate = event => {
+                    if (event.source !== window.parent || event.origin !== location.origin
+                        || event.data?.type !== 'RPHUB_API_SETTINGS_UPDATED') return;
+                    applyProviderSnapshot(event.data);
+                };
                 const syncRPHubSettings = async (notify = true) => {
                     isSyncingRPHub.value = true;
                     try {
                         let syncData;
-                        try {
-                            syncData = await requestRPHubSettingsFromParent();
-                        } catch (_) {
-                            syncData = { settings: await readRPHubSettings() };
-                        }
-                        const rphubSettings = syncData.settings;
-                        if (rphubSettings.apiProviderId === 'custom2') {
-                            rphubSettings.apiProviderId = 'custom';
-                            rphubSettings.customApiUrl = rphubSettings.customApiUrl2 || rphubSettings.apiUrl || '';
-                            rphubSettings.apiProviderKeys = { ...rphubSettings.apiProviderKeys,
-                                custom: rphubSettings.apiKey || rphubSettings.apiProviderKeys?.custom2 || '' };
-                        }
-                        const providerKeys = rphubSettings.apiProviderKeys && typeof rphubSettings.apiProviderKeys === 'object'
-                            ? rphubSettings.apiProviderKeys
-                            : {};
-                        const getProviderKey = id => providerKeys[id]
-                            || (rphubSettings.apiProviderId === id ? rphubSettings.apiKey : '')
-                            || '';
-                        const providerDefinitions = syncData.providers || [
-                            ...window.RPHubConfig.apiProviderOptions,
-                            ...(Array.isArray(rphubSettings.customApiProviders) && rphubSettings.customApiProviders.length
-                                ? rphubSettings.customApiProviders
-                                : [{ id: 'custom', name: '自定义', apiUrl: rphubSettings.customApiUrl || '' }])
-                        ];
-                        const providers = providerDefinitions.map(provider => ({
-                            ...provider,
-                            chatProtocol: rphubSettings.apiProviderModes?.[provider.id]?.chat || provider.chatProtocol || 'openai-chat-completions',
-                            apiKey: getProviderKey(provider.id)
-                        })).filter(provider => provider.id !== 'custom'
-                            || provider.apiUrl || provider.apiKey || rphubSettings.apiProviderId === provider.id);
-
-                        apiProviders.value = providers;
-                        globalSettings.value.providers = JSON.parse(JSON.stringify(providers));
-                        const activeProvider = providers.find(provider => provider.id === rphubSettings.apiProviderId)
-                            || providers.find(provider => provider.apiKey)
-                            || null;
-                        if (activeProvider) selectApiProvider(activeProvider, false);
-                        else settings.value = { ...settings.value, providerId: '', apiUrl: '', apiKey: '' };
+                        try { syncData = await requestRPHubSettingsFromParent(); }
+                        catch (_) { syncData = { settings: await readRPHubSettings() }; }
+                        applyProviderSnapshot(syncData);
                         await saveData();
-                        const configuredCount = providers.filter(provider => provider.apiKey).length;
+                        const configuredCount = apiProviders.value.filter(provider => provider.apiKey).length;
                         if (notify) showToast(`已同步 ${configuredCount} 个已配置供应商`, 'success');
                         return true;
                     } catch (error) {
@@ -2770,12 +2759,14 @@ ${charPrompt}
 
                 onMounted(() => {
                     loadData().then(() => syncRPHubAndModels(false));
+                    window.addEventListener('message', applyParentProviderUpdate);
                     window.addEventListener('resize', handleResize);
                     // 初始化 Tab 滑块
                     nextTick(() => updateTabSlider());
                 });
 
                 onUnmounted(() => {
+                    window.removeEventListener('message', applyParentProviderUpdate);
                     window.removeEventListener('resize', handleResize);
                 });
 

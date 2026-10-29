@@ -34,7 +34,15 @@ test('provider deletion removes legacy URLs, keys, modes and stale bindings', ()
     assert.match(app, /const pruneDanglingProviderState =/);
     assert.match(app, /settings\.customApiUrl = '';/);
     assert.match(app, /delete settings\.customApiUrl2;/);
-    assert.match(app, /referencedProviderIds\.has\(provider\.id\)/);
-    assert.doesNotMatch(app, /provider\.apiUrl \|\| hasKey \|\| referencedProviderIds/);
+    assert.match(app, /providerMigrationVersion: 0/);
+    assert.match(app, /if \(settings\.providerMigrationVersion >= 2\) return false/);
+    assert.match(app, /custom-\x27 \+ legacyId/);
     assert.match(app, /saveData\(\{ saveMemories: false, saveCharacters: false \}\)/);
+});
+
+test('novel accepts provider updates only from the same-origin parent', () => {
+    const novel = read('novel/index.html');
+    assert.match(novel, /RPHUB_API_SETTINGS_UPDATED/);
+    assert.match(novel, /event\.source !== window\.parent \|\| event\.origin !== location\.origin/);
+    assert.match(novel, /applyProviderSnapshot\(event\.data\)/);
 });
