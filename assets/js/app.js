@@ -753,10 +753,9 @@ const app = createApp({
                 { id: 'custom', name: '自定义', apiUrl: settings.customApiUrl || '' },
                 { id: 'custom2', name: '自定义2', apiUrl: settings.customApiUrl2 || '' },
             ];
-
             legacyProviders.forEach(provider => {
-                const hasKey = Boolean(settings.apiProviderKeys?.[provider.id]);
-                if (!providerIds.has(provider.id) && (provider.apiUrl || hasKey || referencedProviderIds.has(provider.id))) {
+                // Legacy URL and key fields are migration inputs, not proof that the provider is still selected.
+                if (!providerIds.has(provider.id) && referencedProviderIds.has(provider.id)) {
                     providers.push(provider);
                     providerIds.add(provider.id);
                 }
