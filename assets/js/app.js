@@ -697,6 +697,43 @@ const app = createApp({
         const isProviderEmbeddingEnabled = (providerId) => (
             getProviderModes(providerId).embedding === EMBEDDING_PROTOCOL_OPENAI
         );
+        const providerBindingKeys = Object.freeze([
+            ['modelProviderId', 'model'],
+            ['qualityModelProviderId', 'qualityModel'],
+            ['balancedModelProviderId', 'balancedModel'],
+            ['fastModelProviderId', 'fastModel'],
+            ['uiTemplateModelProviderId', 'uiTemplateModel'],
+            ['visionModelProviderId', 'visionModel'],
+        ]);
+        const pruneDanglingProviderState = ({ includeMemory = false } = {}) => {
+            const validIds = new Set(allApiProviderOptions.value.map(provider => provider.id));
+            providerBindingKeys.forEach(([providerKey, modelKey]) => {
+                const providerId = settings[providerKey];
+                if (providerId && !validIds.has(providerId)) {
+                    settings[providerKey] = '';
+                    settings[modelKey] = '';
+                }
+            });
+            if (memorySettings.embeddingProviderId && !validIds.has(memorySettings.embeddingProviderId)) {
+                memorySettings.embeddingProviderId = '';
+                memorySettings.embeddingModel = '';
+            }
+            if (memorySettings.classicProviderId && !validIds.has(memorySettings.classicProviderId)) {
+                memorySettings.classicProviderId = '';
+                memorySettings.classicModel = '';
+            }
+            const validKeys = {};
+            Object.entries(settings.apiProviderKeys || {}).forEach(([providerId, apiKey]) => {
+                if (validIds.has(providerId)) validKeys[providerId] = apiKey;
+            });
+            settings.apiProviderKeys = validKeys;
+            const validModes = {};
+            Object.entries(settings.apiProviderModes || {}).forEach(([providerId, mode]) => {
+                if (validIds.has(providerId)) validModes[providerId] = normalizeProviderMode(mode);
+            });
+            settings.apiProviderModes = validModes;
+            availableModels.value = availableModels.value.filter(model => validIds.has(model.providerId));
+        };
 
         const migrateLegacyCustomApiProviders = () => {
             const providers = Array.isArray(settings.customApiProviders)
@@ -755,6 +792,7 @@ const app = createApp({
                 normalizedModes[provider.id] = normalizeProviderMode(settings.apiProviderModes[provider.id]);
             });
             settings.apiProviderModes = normalizedModes;
+            pruneDanglingProviderState();
 
             let provider = getApiProviderById(settings.apiProviderId);
             if (!provider) {
@@ -882,6 +920,8 @@ const app = createApp({
                 delete nextModes[providerId];
                 settings.apiProviderModes = nextModes;
                 availableModels.value = availableModels.value.filter(model => model.providerId !== providerId);
+                settings.customApiUrl = '';
+                if (settings.customApiUrl2) delete settings.customApiUrl2;
 
                 if (settings.apiProviderId === providerId) {
                     const fallback = getApiProviderById(DEFAULT_API_PROVIDER_ID) || apiProviderOptions[0];
@@ -889,6 +929,9 @@ const app = createApp({
                     settings.apiUrl = fallback.apiUrl;
                     settings.apiKey = settings.apiProviderKeys[fallback.id] || '';
                 }
+                pruneDanglingProviderState();
+                saveData({ saveMemories: false, saveCharacters: false })
+                    .catch(error => console.error('Save provider deletion failed:', error));
                 showToast(`已删除供应商：${provider.name}`, 'success');
             });
         };
@@ -1172,10 +1215,16 @@ const app = createApp({
                 if (!iframe || event.source !== iframe.contentWindow
                     || event.origin !== getEmbeddedFrameOrigin(iframe)) return;
                 const mapNovelProvider = (provider) => {
-                    const config = getProviderApiConfig(provider.id, { allowIncomplete: true });
-                    return { id: provider.id, name: provider.name, icon: provider.icon || '',
-                        apiUrl: config.apiUrl, apiKey: config.apiKey,
-                        chatProtocol: config.chatProtocol };
+                    try {
+                        const config = getProviderApiConfig(provider.id, { allowIncomplete: true });
+                        return { id: provider.id, name: provider.name, icon: provider.icon || '',
+                            apiUrl: config.apiUrl, apiKey: config.apiKey,
+                            chatProtocol: config.chatProtocol };
+                    } catch (_) {
+                        return { id: provider.id, name: provider.name, icon: provider.icon || '',
+                            apiUrl: provider.apiUrl || '', apiKey: '',
+                            chatProtocol: getProviderModes(provider.id).chat };
+                    }
                 };
                 event.source.postMessage({
                     type: 'RPHUB_API_SETTINGS', requestId: event.data.requestId,
@@ -2260,6 +2309,7 @@ const app = createApp({
                 if (savedMemorySettings) Object.assign(memorySettings, savedMemorySettings);
                 normalizeMemorySettings();
                 migrateLegacyMemoryProviders(savedSettings || {});
+                pruneDanglingProviderState({ includeMemory: true });
 
                 const savedTokenUsageHistory = await getStoredValue('token_usage_history');
                 if (Array.isArray(savedTokenUsageHistory)) {
