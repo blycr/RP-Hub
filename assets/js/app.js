@@ -705,7 +705,7 @@ const app = createApp({
             ['uiTemplateModelProviderId', 'uiTemplateModel'],
             ['visionModelProviderId', 'visionModel'],
         ]);
-        const pruneDanglingProviderState = ({ includeMemory = false } = {}) => {
+        const pruneDanglingProviderState = ({ includeMemory = false, memorySettings: targetMemorySettings = null } = {}) => {
             const validIds = new Set(allApiProviderOptions.value.map(provider => provider.id));
             providerBindingKeys.forEach(([providerKey, modelKey]) => {
                 const providerId = settings[providerKey];
@@ -714,11 +714,11 @@ const app = createApp({
                     settings[modelKey] = '';
                 }
             });
-            if (memorySettings.embeddingProviderId && !validIds.has(memorySettings.embeddingProviderId)) {
+            if (includeMemory && memorySettings.embeddingProviderId && !validIds.has(memorySettings.embeddingProviderId)) {
                 memorySettings.embeddingProviderId = '';
                 memorySettings.embeddingModel = '';
             }
-            if (memorySettings.classicProviderId && !validIds.has(memorySettings.classicProviderId)) {
+            if (includeMemory && memorySettings.classicProviderId && !validIds.has(memorySettings.classicProviderId)) {
                 memorySettings.classicProviderId = '';
                 memorySettings.classicModel = '';
             }
@@ -2309,7 +2309,7 @@ const app = createApp({
                 if (savedMemorySettings) Object.assign(memorySettings, savedMemorySettings);
                 normalizeMemorySettings();
                 migrateLegacyMemoryProviders(savedSettings || {});
-                pruneDanglingProviderState({ includeMemory: true });
+                pruneDanglingProviderState({ includeMemory: true, memorySettings });
 
                 const savedTokenUsageHistory = await getStoredValue('token_usage_history');
                 if (Array.isArray(savedTokenUsageHistory)) {
