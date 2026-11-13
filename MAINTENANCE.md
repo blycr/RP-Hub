@@ -160,10 +160,14 @@ RPHUB_CHROMIUM_PATH=/path/to/chrome npm run test:mobile
 
 `reapply-multi-provider-patch.js` 的 `PROVIDER_SETTING_KEYS` 回到五项，`reconcileVisionProviderBinding` 从「注入 vision 绑定」改为「清理 vision 残留」，`image_recognition` 路由分支与 vision 守卫注入删除。既有注入过 vision 绑定的目标会被清掉，因此重复运行仍幂等。`scripts/tests/reapply-patches.test.js` 的 vision 断言由 `match` 改为 `doesNotMatch`。
 
-已知既有缺陷（非本轮引入）：`reconcileCharacter` 对已注入适配器脚本的 `character/index.html` 会抛 `Cannot find character page script anchor`，在 2.0.5 基线上同样复现，本轮未扩大范围修复。
+### 协调器在 character 页的幂等性缺陷（已修复）
+
+`reconcileCharacter` 原先用精确字符串 `<script src="../assets/js/rphub-api-adapters.js"></script>` 判断"适配器是否已注入"。部署页给所有外链脚本加了 `data-cfasync="false"`（Cloudflare Rocket Loader 契约，见 AGENTS.md），标签因此永远匹配不上；注入判定为"缺失"，接着去找已被占用的锚点，于是抛出 `Cannot find character page script anchor`。`validateCharacterRuntime` 有同样的问题，会把已注入页面误报为缺少适配器；它的顺序检查还拿第一个 `<script` 出现位置作比较，遇到外链标签也会混淆。
+
+修复方式：改为按 `src` 路径匹配标签（`CHARACTER_ADAPTER_SCRIPT_PATTERN`），与属性顺序无关；注入时读取页面已有外部脚本的写法，已带 cfasync 的页面生成同样带 cfasync 的适配器标签；顺序检查改为与第一个内联 `<script>` 比较。测试 fixture 不含 cfasync，所以这个缺陷直到在真实部署页上运行协调器才暴露。
 
 ### 验证结果
 
-产品与 Worker 测试 **37/37** 通过（原 33，新增 4 条 2.0.6 回归）；Sync 协调器 **76/76** 通过；`npm run build:static` 可复现（改模板后需一并提交重算的 `assets/vendor/tailwind.css`）；`npm run check:static` 通过。协调器在 `app.js`、`index.html`、`novel/index.html`、`ui-components.js` 上均报告幂等。`npm run test:mobile` 在本机首次实跑通过：`/`、`/character/`、`/novel/` 三路由均挂载、无页面错误、无外部关键依赖（首页 `bootShell=ready`）。此前本机缺 Chromium；`npx playwright-core install chromium` 在本机下载停滞，改为直接取 Playwright CDN 的 `chrome-linux64.zip` 解压后以 `RPHUB_CHROMIUM_PATH` 指向该二进制。
+产品与 Worker 测试 **37/37** 通过（原 33，新增 4 条 2.0.6 回归）；Sync 协调器 **77/77** 通过（新增 1 条 character cfasync 幂等回归）；`npm run build:static` 可复现（改模板后需一并提交重算的 `assets/vendor/tailwind.css`）；`npm run check:static` 通过。协调器在 `app.js`、`index.html`、`character/index.html`、`novel/index.html`、`ui-components.js` 上均报告幂等。`npm run test:mobile` 在本机首次实跑通过：`/`、`/character/`、`/novel/` 三路由均挂载、无页面错误、无外部关键依赖（首页 `bootShell=ready`）。此前本机缺 Chromium；`npx playwright-core install chromium` 在本机下载停滞，改为直接取 Playwright CDN 的 `chrome-linux64.zip` 解压后以 `RPHUB_CHROMIUM_PATH` 指向该二进制。
 
 本轮不修改用户脚本、Card 或 Legacy。真实供应商 SSE、现有用户数据和多设备验收仍需单独进行。
