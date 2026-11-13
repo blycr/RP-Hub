@@ -7,6 +7,28 @@ const path = require('node:path');
 const vm = require('node:vm');
 const read = name => fs.readFileSync(path.join(__dirname, '..', name), 'utf8');
 
+test('the public repository carries product code, not internal process docs', () => {
+    // This repo is public and is served by GitHub Pages. Agent instructions and
+    // maintenance/release records belong to the private maintenance repository;
+    // they were published here until 2026-11-13 and must not return.
+    const repoRoot = path.join(__dirname, '..');
+    for (const internal of ['AGENTS.md', 'MAINTENANCE.md', 'HANDOFF.md']) {
+        assert.equal(
+            fs.existsSync(path.join(repoRoot, internal)),
+            false,
+            `${internal} is an internal process document and must not live in the public repo`,
+        );
+    }
+    const gitignore = read('.gitignore');
+    for (const internal of ['AGENTS.md', 'MAINTENANCE.md', 'HANDOFF.md']) {
+        assert.match(gitignore, new RegExp(`^${internal.replace('.', '\\.')}$`, 'm'));
+    }
+    // Product docs must not link to the removed files.
+    for (const doc of ['README.md', 'README.en.md']) {
+        assert.doesNotMatch(read(doc), /\(MAINTENANCE\.md|\(AGENTS\.md/);
+    }
+});
+
 test('manual model controls bind the active quick slot to its provider', () => {
     const source = read('assets/js/ui-components.js');
     const start = source.indexOf('    const ModelSelectorModal = {');

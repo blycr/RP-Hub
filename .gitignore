@@ -3,3 +3,10 @@ RP-Hub-Sync-Plan.md
 RP-Hub-Asset-Reconstruct-Plan.md
 RP-Hub-Test-Handover.md
 node_modules/
+
+# This repository is public. Keep agent instructions and internal process
+# records (maintenance reviews, handoffs, release procedures) out of it; they
+# live in the private maintenance repository instead.
+AGENTS.md
+MAINTENANCE.md
+HANDOFF.md
