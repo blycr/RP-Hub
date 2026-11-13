@@ -158,6 +158,15 @@ test('upstream 2.0.5 Gemini input obfuscation runs automatically with a fresh re
     assert.doesNotMatch(index, /v-model="settings\.inputObfuscation"/);
     assert.doesNotMatch(index, /模型请求网关/);
     assert.doesNotMatch(index, /rphub-native-sync/);
+    // The retired in-page sync experiment must not come back: cross-device
+    // sync belongs to the installed userscript, and these modules were removed.
+    for (const file of [
+        'rphub-sync-native.js', 'rphub-sync-snapshot.js',
+        'rphub-sync-crypto.js', 'rphub-sync-github.js',
+    ]) {
+        assert.equal(fs.existsSync(path.join(__dirname, '..', 'assets', 'js', file)), false, `${file} must stay removed`);
+        assert.doesNotMatch(index, new RegExp(file.replace('.', '\\.')));
+    }
     assert.match(index, /enterkeyhint="enter"/);
     assert.doesNotMatch(index, /@keydown\.enter\.exact\.prevent="sendMessage"/);
 });
