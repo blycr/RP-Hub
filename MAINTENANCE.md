@@ -160,14 +160,25 @@ RPHUB_CHROMIUM_PATH=/path/to/chrome npm run test:mobile
 
 `reapply-multi-provider-patch.js` 的 `PROVIDER_SETTING_KEYS` 回到五项，`reconcileVisionProviderBinding` 从「注入 vision 绑定」改为「清理 vision 残留」，`image_recognition` 路由分支与 vision 守卫注入删除。既有注入过 vision 绑定的目标会被清掉，因此重复运行仍幂等。`scripts/tests/reapply-patches.test.js` 的 vision 断言由 `match` 改为 `doesNotMatch`。
 
-### 协调器在 character 页的幂等性缺陷（已修复）
+### 协调器按精确字符串匹配页面脚本的缺陷（已修复）
 
-`reconcileCharacter` 原先用精确字符串 `<script src="../assets/js/rphub-api-adapters.js"></script>` 判断"适配器是否已注入"。部署页给所有外链脚本加了 `data-cfasync="false"`（Cloudflare Rocket Loader 契约，见 AGENTS.md），标签因此永远匹配不上；注入判定为"缺失"，接着去找已被占用的锚点，于是抛出 `Cannot find character page script anchor`。`validateCharacterRuntime` 有同样的问题，会把已注入页面误报为缺少适配器；它的顺序检查还拿第一个 `<script` 出现位置作比较，遇到外链标签也会混淆。
+部署页给所有外链脚本加了 `data-cfasync="false"`（Cloudflare Rocket Loader 契约，见 AGENTS.md），个别还带 `defer`。协调器原先在多处用**精确标签字符串**判断"脚本是否已注入"和"把新脚本插到哪一行"，这些判断在真实页面上全部落空：
 
-修复方式：改为按 `src` 路径匹配标签（`CHARACTER_ADAPTER_SCRIPT_PATTERN`），与属性顺序无关；注入时读取页面已有外部脚本的写法，已带 cfasync 的页面生成同样带 cfasync 的适配器标签；顺序检查改为与第一个内联 `<script>` 比较。测试 fixture 不含 cfasync，所以这个缺陷直到在真实部署页上运行协调器才暴露。
+| 位置 | 原行为 |
+| --- | --- |
+| `character` 注入检测 | 认不出已注入的标签，判定为缺失后去找锚点，而锚点同样不匹配，抛出 `Cannot find character page script anchor` |
+| `character` 注入锚点 | 三个候选锚点（`ui-select.js` / `ui-components.js` / `core-utils.js`）都用裸标签，全都匹配不上 |
+| `character` 校验 | `validateCharacterRuntime` 误报"缺少适配器"；顺序检查拿第一个 `<script` 位置比较，任何外链标签都能满足 |
+| `novel` 注入与校验 | 同类问题；此外原实现用 `content.replace` 而不是 `replaceExactlyOnce`，多锚点时会静默只改一处 |
+
+修复方式：新增按 `src` 路径匹配的 `scriptTagPattern` / `findScriptTag` / `hasScript`，与属性顺序、额外属性无关；新增 `externalLocalScriptAttributes` / `buildAdapterInjection`，注入时**镜像被改页面自身的外链脚本属性**（cfasync、defer），而不是硬编码一种写法；顺序检查改为与第一个内联 `<script>` 比较；`novel` 的注入改走 `replaceExactlyOnce`。
+
+仅修检测是不够的：这条路径只有"页面确实需要注入"时才会执行，而部署页早已注入过适配器，所以幂等检查能过、真正注入依然失败。回归测试因此显式构造了"从部署页移除适配器后重新注入"的用例。测试 fixture 不含 cfasync，这也是该缺陷长期未在 CI 暴露的原因。
+
+验证：三重变异（锚点退回精确字符串、检测退回精确字符串、去掉属性镜像）均能让新增测试失败；在真实部署页上移除适配器后重新注入，输出正确镜像 `data-cfasync="false"`；隔离浏览器加载注入后的角色页，Vue 正常挂载、`window.RPHubApiAdapters.buildChatRequest` 可用、两种聊天协议常量就位、无控制台错误。
 
 ### 验证结果
 
-产品与 Worker 测试 **37/37** 通过（原 33，新增 4 条 2.0.6 回归）；Sync 协调器 **77/77** 通过（新增 1 条 character cfasync 幂等回归）；`npm run build:static` 可复现（改模板后需一并提交重算的 `assets/vendor/tailwind.css`）；`npm run check:static` 通过。协调器在 `app.js`、`index.html`、`character/index.html`、`novel/index.html`、`ui-components.js` 上均报告幂等。`npm run test:mobile` 在本机首次实跑通过：`/`、`/character/`、`/novel/` 三路由均挂载、无页面错误、无外部关键依赖（首页 `bootShell=ready`）。此前本机缺 Chromium；`npx playwright-core install chromium` 在本机下载停滞，改为直接取 Playwright CDN 的 `chrome-linux64.zip` 解压后以 `RPHUB_CHROMIUM_PATH` 指向该二进制。
+产品与 Worker 测试 **37/37** 通过（原 33，新增 4 条 2.0.6 回归）；Sync 协调器 **78/78** 通过（新增 2 条脚本注入回归）；`npm run build:static` 可复现（改模板后需一并提交重算的 `assets/vendor/tailwind.css`）；`npm run check:static` 通过。协调器在 `app.js`、`index.html`、`character/index.html`、`novel/index.html`、`ui-components.js` 上均报告幂等。`npm run test:mobile` 在本机首次实跑通过：`/`、`/character/`、`/novel/` 三路由均挂载、无页面错误、无外部关键依赖（首页 `bootShell=ready`）。此前本机缺 Chromium；`npx playwright-core install chromium` 在本机下载停滞，改为直接取 Playwright CDN 的 `chrome-linux64.zip` 解压后以 `RPHUB_CHROMIUM_PATH` 指向该二进制。
 
 本轮不修改用户脚本、Card 或 Legacy。真实供应商 SSE、现有用户数据和多设备验收仍需单独进行。
