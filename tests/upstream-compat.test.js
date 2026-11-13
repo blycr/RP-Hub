@@ -174,3 +174,84 @@ test('upstream 2.0.5 secret inputs, context markers and long durations are retai
     assert.match(data, /const isMemory = message\.role !== 'system' && isRoleMemoryContextContent\(message\.content\);/);
     assert.match(data, /if \(isMemory \|\| recallCount > 0\)/);
 });
+
+test('upstream 2.0.6 sends images to the chat model instead of a vision model', () => {
+    const app = read('assets/js/app.js');
+    const index = read('index.html');
+    const content = read('assets/js/built-in-content.js');
+    // The standalone vision model and its recognition round trip are gone.
+    assert.doesNotMatch(app, /visionModelProviderId/);
+    assert.doesNotMatch(app, /settings\.visionModel/);
+    assert.doesNotMatch(app, /recognizeChatImage/);
+    assert.doesNotMatch(app, /image_recognition/);
+    assert.doesNotMatch(app, /isRecognizingImages/);
+    assert.doesNotMatch(index, /openModelSelector\('visionModel'\)/);
+    assert.doesNotMatch(index, /image\.status/);
+    // Images ride on the user message as image_url parts.
+    assert.match(app, /const buildChatMessageContent = \(message, content\) => \{/);
+    assert.match(app, /type: 'image_url', image_url: \{ url: image\.dataUrl, detail: 'high' \}/);
+    assert.match(app, /content: buildChatMessageContent\(\{ role, _sourceIndexes \}, content\)/);
+    assert.match(app, /pendingChatImages\.value\.map\(\(\{ dataUrl \}\) => \(\{ dataUrl \}\)\)/);
+    // Pending-image reads still gate sending, and the vision bullet is announced.
+    assert.match(index, /pendingChatImageReadCount > 0/);
+    assert.match(content, /### RP-Hub 2\.0\.6/);
+    assert.match(content, /图片改由聊天主模型直接识别/);
+});
+
+test('2.0.6 model settings list keeps every model entry in one place', () => {
+    const index = read('index.html');
+    const ui = read('assets/js/ui-components.js');
+    const app = read('assets/js/app.js');
+    assert.match(index, /<!-- Model Configuration Inputs -->[\s\S]*?v-for="item in \[[\s\S]*?target: 'quickModels'/);
+    assert.match(index, /target: 'memoryClassicModel', label: '记忆总结模型'/);
+    assert.match(index, /target: 'memoryEmbeddingModel', label: '记忆向量模型'/);
+    assert.match(index, /target: 'uiTemplateModel', label: '变量分析模型'/);
+    assert.match(ui, /target === 'quickModels' \? '聊天主模型' : '选择模型'/);
+    // The consolidated list must be wired to real handlers, not a static list.
+    assert.match(index, /@click="openModelSelector\(item\.target\)"/);
+    assert.ok(app.includes("if (target === 'memoryClassicModel')"));
+});
+
+test('image messages never take the Gemini obfuscation prefix', () => {
+    const app = read('assets/js/app.js');
+    // The read_user_input swap must skip image-bearing messages: their content
+    // becomes an array, and prepareRequest concatenates a string prefix onto it.
+    const swap = app.match(/const inputIndex = obfuscateInput \? messages\.findIndex\([^;]*?\) : -1;/);
+    assert.ok(swap, 'read_user_input swap index lookup must exist');
+    assert.match(swap[0], /getMessageImages\(message\)\.length === 0/);
+    // The prefix write still targets the same index that was excluded above.
+    assert.match(app, /messages\[inputIndex\]\.content = apiMessages\[inputIndex\]\.content = prefix \+ inputPrompt/);
+    assert.match(app, /const buildChatMessageContent = /);
+});
+
+test('buildChatMessageContent only adds image parts for user messages with data', () => {
+    const app = read('assets/js/app.js');
+    const start = app.indexOf('        const getMessageImages = (message) => {');
+    const end = app.indexOf('        const clearPendingChatImages = ', start);
+    assert.ok(start >= 0 && end > start);
+    const chatHistory = {
+        value: [
+            { role: 'user', content: 'hi', imageAttachments: [{ dataUrl: 'data:image/png;base64,a' }, { dataUrl: '' }] },
+            { role: 'assistant', content: 'reply', imageAttachments: [{ dataUrl: 'data:image/png;base64,b' }] },
+        ],
+    };
+    const factory = vm.runInNewContext(
+        `(() => { ${app.slice(start, end)}; return { getMessageImages, buildChatMessageContent }; })()`,
+        { chatHistory },
+    );
+    assert.equal(factory.buildChatMessageContent({ role: 'user' }, 'hello'), 'hello');
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(factory.buildChatMessageContent(
+            { role: 'user', _sourceIndexes: [0] }, 'look'
+        ))),
+        [
+            { type: 'text', text: 'look' },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,a', detail: 'high' } },
+        ],
+    );
+    assert.equal(factory.buildChatMessageContent({ role: 'assistant', _sourceIndexes: [1] }, 'reply'), 'reply');
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(factory.buildChatMessageContent({ role: 'user', _sourceIndexes: [0] }, ''))),
+        [{ type: 'image_url', image_url: { url: 'data:image/png;base64,a', detail: 'high' } }],
+    );
+});
