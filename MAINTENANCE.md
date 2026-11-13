@@ -13,11 +13,11 @@ GitHub Pages 已绑定正式域名。2026-10-28 的隔离 Chromium 验证首页�
 | `RP-Hub-Sync`（私有） | 过渡期用户脚本、加密同步数据、补丁规范源与测试、旧 workflow 备份及主要迁移文档 |
 | `RP-Hub-Card`（私有） | 独立的局域网角色卡 API 与旧 Git 历史 bundle；不参与网站构建 |
 
-本定制站点增加不限数量的 API 供应商，可选择兼容协议的推理服务并按供应商绑定聊天、UI 模板、记忆和识图模型。它支持 Chat Completions、Responses 与 Embeddings 路由；上游 1.9 的原生工具调用保留在 `assets/js/api-utils.js` 中。`RP-Hub-Card` 不参与站点构建或上游代码合并；2026-09-24 的白屏修复也未改动其 LAN API 契约。
+本定制站点增加不限数量的 API 供应商，可选择兼容协议的推理服务并按供应商绑定聊天、UI 模板和记忆模型。它支持 Chat Completions、Responses 与 Embeddings 路由；上游 1.9 的原生工具调用保留在 `assets/js/api-utils.js` 中。自上游 2.0.6 起图片由聊天主模型直接识别，不再有独立识图模型。`RP-Hub-Card` 不参与站点构建或上游代码合并；2026-09-24 的白屏修复也未改动其 LAN API 契约。
 
 ## 相对上游的实际文件改动
 
-当前已适配上游公告版本 **2.0.5**，基线为上游提交 `cd8f2a6d599230e8788a1888a478912c6e83d7fe`（2026-10-21）。本轮审查区间为 `0c1c044b0f64ad2bb48a226f9f790a31d7c0dc91..cd8f2a6`；后续更新从 `cd8f2a6` 比较。上游继续更新时应审查增量并维护此表：
+当前已适配上游公告版本 **2.0.6**，基线为上游提交 `9124647`（2026-11-06）。上一轮基线为 `cd8f2a6`（公告 2.0.5，2026-10-21），本轮审查区间即 `cd8f2a6..9124647`；后续更新从 `9124647` 比较。上游继续更新时应审查增量并维护此表：
 
 | 文件 | 本仓库的改动 |
 | --- | --- |
@@ -142,3 +142,28 @@ RPHUB_CHROMIUM_PATH=/path/to/chrome npm run test:mobile
 验证结果：产品与 Worker 测试 27/27 通过，Sync 协调器测试 72/72 通过；JavaScript 语法和 `git diff --check` 通过。隔离 Chromium 使用虚构供应商与角色，验证首页 Vue 挂载、设置页无两张废弃卡片、空间管理仍在、API 与生图密钥控件、官方升级公告、Gemini 工具交换、世界书进入工具结果、自动重试更换零宽前缀及上下文查看器标记。未使用真实用户快照或真实供应商 Key。
 
 本轮不修改用户脚本 2.9.16、Card 或 Legacy。真实供应商 SSE、现有用户数据和多设备验收仍需单独进行。产品提交 `762b1f3`、`10feec1` 已推送，GitHub Pages 构建 [40636766763](https://github.com/blycr/RP-Hub/actions/runs/40636766763) 与 [40637098445](https://github.com/blycr/RP-Hub/actions/runs/40637098445) 均成功；正式域名隔离 Chromium 验证 HTTP 200、Vue 挂载、2.0.5 公告、设置页精简、密钥控件、未公开加载同步脚本及非扩展请求无 4xx，均通过。
+
+## 2026-11-13 上游 2.0.6 适配
+
+从已适配的 `cd8f2a6` 审查上游 `9124647`（公告 2.0.6，2026-11-06），区间为单一线性提交，涉及 6 个文件、净 +68/−165 行。四项改动全部采用：
+
+1. **取消独立识图模型**。上游删除 `settings.visionModel`、`isRecognizingImages`、`recognizeChatImage` 与 `image_recognition` 请求类型，改由 `buildChatMessageContent` 把图片作为 `image_url` 部分直接挂到用户消息上，交给聊天主模型识别。本仓库同步移除五处 vision 供应商绑定（`providerBindingKeys`、`referredProviderIds`、`getProviderReferences`、`requestTrackedChatCompletion` 路由分支、`settings` 默认值）、识图供应商守卫、待发图片的 `analyzing`/`error` 状态与缩略图遮罩，以及设置页的识图模型选择器。`visionModel` 残留值不再回填（`loadData` 只复制 defaults 中存在的键），下次保存自然消失，未写专门迁移。
+2. **模型设置集中展示**。设置页把聊天主模型、记忆总结模型、记忆向量模型和变量分析模型合并为一个 `v-for` 网格，`ui-components.js` 同步把标题与槽位 aria-label 改为「聊天主模型」。快捷面板的直连选择器是本地定制，保留不变。
+3. **密钥输入框留白**。`.settings-view .secret-input input` 改为 `:focus-within` 变体，未聚焦时不再为复制/查看按钮保留右侧空间。
+4. **默认 API 地址**。`DEFAULT_API_CONFIG.apiUrl` 与内置 `sta1n` 供应商改为 `https://sta1n.ai/v1`，「获取API」链接改为 `https://sta1n.ai/keys`。**已有用户配置不迁移**：实测两个域名都仍在服务（均返回 401），重写已存 URL 没有收益且会静默改动可用部署。
+
+### Gemini 输入混淆的交叉点
+
+本地定制在 `prepareRequest` 里执行 `messages[inputIndex].content = apiMessages[inputIndex].content = prefix + inputPrompt`，而 2.0.6 会把带图消息的 `content` 变成数组。上游用 `getMessageImages(message).length === 0` 把带图消息排除在 `read_user_input` 搬移之外，本仓库采用同一条件；`tests/upstream-compat.test.js` 对此加断言，并已用「删除该条件」的变异版本确认测试会失败。
+
+### 协调器
+
+`reapply-multi-provider-patch.js` 的 `PROVIDER_SETTING_KEYS` 回到五项，`reconcileVisionProviderBinding` 从「注入 vision 绑定」改为「清理 vision 残留」，`image_recognition` 路由分支与 vision 守卫注入删除。既有注入过 vision 绑定的目标会被清掉，因此重复运行仍幂等。`scripts/tests/reapply-patches.test.js` 的 vision 断言由 `match` 改为 `doesNotMatch`。
+
+已知既有缺陷（非本轮引入）：`reconcileCharacter` 对已注入适配器脚本的 `character/index.html` 会抛 `Cannot find character page script anchor`，在 2.0.5 基线上同样复现，本轮未扩大范围修复。
+
+### 验证结果
+
+产品与 Worker 测试 **37/37** 通过（原 33，新增 4 条 2.0.6 回归）；Sync 协调器 **76/76** 通过；`npm run build:static` 可复现（改模板后需一并提交重算的 `assets/vendor/tailwind.css`）；`npm run check:static` 通过。协调器在 `app.js`、`index.html`、`novel/index.html`、`ui-components.js` 上均报告幂等。`npm run test:mobile` 在本机首次实跑通过：`/`、`/character/`、`/novel/` 三路由均挂载、无页面错误、无外部关键依赖（首页 `bootShell=ready`）。此前本机缺 Chromium；`npx playwright-core install chromium` 在本机下载停滞，改为直接取 Playwright CDN 的 `chrome-linux64.zip` 解压后以 `RPHUB_CHROMIUM_PATH` 指向该二进制。
+
+本轮不修改用户脚本、Card 或 Legacy。真实供应商 SSE、现有用户数据和多设备验收仍需单独进行。
