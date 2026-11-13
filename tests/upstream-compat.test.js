@@ -29,6 +29,56 @@ test('the public repository carries product code, not internal process docs', ()
     }
 });
 
+test('2.0.6 endpoint migration moves only the retired host', () => {
+    const app = read('assets/js/app.js');
+    const start = app.indexOf('        const LEGACY_API_ORIGINS = Object.freeze(');
+    const end = app.indexOf('        const normalizeApiProviderSettings = ', start);
+    assert.ok(start >= 0 && end > start, 'migration block must exist');
+
+    const makeSettings = () => ({
+        apiUrl: 'https://cdn.sta1n.cn/v1',
+        customApiProviders: [
+            { id: 'sta1n-old', apiUrl: 'https://cdn.sta1n.cn/v1' },
+            { id: 'other', apiUrl: 'https://api.deepseek.com/v1' },
+            { id: 'lookalike', apiUrl: 'https://cdn.sta1n.cn.example.com/v1' },
+            { id: 'bare', apiUrl: 'not a url' },
+        ],
+    });
+    const run = (settings) => vm.runInNewContext(
+        `(() => { ${app.slice(start, end)}; return migrateLegacyApiOrigins(); })()`,
+        { settings, URL },
+    );
+
+    const settings = makeSettings();
+    // URL is available in the sandbox, so the real function runs against it.
+    const changed = run(settings);
+    assert.equal(changed, true);
+    assert.equal(settings.apiUrl, 'https://sta1n.ai/v1');
+    assert.equal(settings.customApiProviders[0].apiUrl, 'https://sta1n.ai/v1');
+    // Untouched: a different provider, a lookalike host, and an unparseable value.
+    assert.equal(settings.customApiProviders[1].apiUrl, 'https://api.deepseek.com/v1');
+    assert.equal(settings.customApiProviders[2].apiUrl, 'https://cdn.sta1n.cn.example.com/v1');
+    assert.equal(settings.customApiProviders[3].apiUrl, 'not a url');
+    // Provider ids own the API keys, so they must never change.
+    assert.deepEqual(
+        settings.customApiProviders.map(provider => provider.id),
+        ['sta1n-old', 'other', 'lookalike', 'bare'],
+    );
+
+    // A second run is a no-op, so reloading does not re-save.
+    assert.equal(run(settings), false);
+
+    // Nothing to migrate: already-new endpoints stay untouched.
+    const clean = { apiUrl: 'https://sta1n.ai/v1', customApiProviders: [{ id: 'x', apiUrl: 'https://sta1n.ai/v1' }] };
+    assert.equal(run(clean), false);
+    assert.equal(clean.apiUrl, 'https://sta1n.ai/v1');
+
+    // The retired host must not reappear as a code default.
+    assert.doesNotMatch(app, /apiUrl: 'https:\/\/cdn\.sta1n\.cn/);
+    const core = read('assets/js/core-utils.js');
+    assert.doesNotMatch(core, /https:\/\/cdn\.sta1n\.cn/);
+});
+
 test('manual model controls bind the active quick slot to its provider', () => {
     const source = read('assets/js/ui-components.js');
     const start = source.indexOf('    const ModelSelectorModal = {');

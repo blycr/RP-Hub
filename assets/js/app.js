@@ -791,6 +791,44 @@ const app = createApp({
             return true;
         };
 
+        // Upstream 2.0.6 moved the built-in provider to sta1n.ai. Both hosts serve
+        // the same New API backend on the same keys, so a saved custom provider
+        // that still points at the retired host can be moved without breaking it.
+        // Only the exact retired origin is rewritten; any other URL a user typed is
+        // left alone, and the provider id (which owns the API key) never changes.
+        const LEGACY_API_ORIGINS = Object.freeze(['https://cdn.sta1n.cn']);
+        const migrateLegacyApiOrigins = () => {
+            const providers = Array.isArray(settings.customApiProviders)
+                ? settings.customApiProviders
+                : [];
+            let changed = false;
+            providers.forEach(provider => {
+                if (!provider || typeof provider !== 'object') return;
+                const raw = String(provider.apiUrl || '');
+                if (!raw) return;
+                let parsed;
+                try { parsed = new URL(raw); } catch (_) { return; }
+                if (!LEGACY_API_ORIGINS.includes(parsed.origin)) return;
+                parsed.hostname = 'sta1n.ai';
+                provider.apiUrl = parsed.toString().replace(/\/$/, '');
+                changed = true;
+            });
+            // apiUrl mirrors the active provider and is rewritten on every provider
+            // switch, but keep the stored copy consistent for the current session.
+            const legacyApiUrl = String(settings.apiUrl || '');
+            if (legacyApiUrl) {
+                try {
+                    const parsed = new URL(legacyApiUrl);
+                    if (LEGACY_API_ORIGINS.includes(parsed.origin)) {
+                        parsed.hostname = 'sta1n.ai';
+                        settings.apiUrl = parsed.toString().replace(/\/$/, '');
+                        changed = true;
+                    }
+                } catch (_) { /* keep unparseable values untouched */ }
+            }
+            return changed;
+        };
+
         const normalizeApiProviderSettings = () => {
             if (!settings.apiProviderKeys || typeof settings.apiProviderKeys !== 'object' || Array.isArray(settings.apiProviderKeys)) {
                 settings.apiProviderKeys = {};
@@ -2332,7 +2370,8 @@ const app = createApp({
                 if (savedMemorySettings) Object.assign(memorySettings, savedMemorySettings);
                 normalizeMemorySettings();
                 migrateLegacyMemoryProviders(savedSettings || {});
-                if (migrateLegacyCustomApiProviders(memorySettings)) {
+                const providerStateMigrated = migrateLegacyCustomApiProviders(memorySettings);
+                if (migrateLegacyApiOrigins() || providerStateMigrated) {
                     await saveData({ saveMemories: false, saveCharacters: false });
                 }
                 normalizeApiProviderSettings();
