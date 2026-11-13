@@ -25,7 +25,7 @@ GitHub Pages 已绑定正式域名。2026-10-28 的隔离 Chromium 验证首页�
 | `assets/js/api-utils.js` | 在上游原生请求客户端中增加 Responses 请求和流解析，续接原生工具调用 ID，并加入可选的受控网关路由 |
 | `assets/js/rphub-api-adapters.js` | 新增 Chat Completions、Responses、Embeddings 协议适配器 |
 | `index.html`、`assets/js/ui-components.js` | 增加动态供应商设置、按供应商选模、手动输入模型 ID、密钥复制/显示与空间管理；移除早期网关和原生同步设置入口；关闭不使用的远程版本提醒入口 |
-| `assets/js/rphub-sync-*.js` | 原生同步的过渡维护源码；主页面不加载，跨设备同步继续由已安装用户脚本负责 |
+| `assets/js/rphub-sync-*.js` | **已于 2026-11-13 删除**。四个过渡期原生同步模块没有任何运行引用；跨设备同步继续由已安装用户脚本负责。测试会断言这些文件保持不存在 |
 | `gateway/` | 独立、可选的受控 Cloudflare Worker 模型请求服务源码；主页面不加载，不自动转发请求 |
 | `character/index.html`、`novel/index.html` | 将工坊和小说页的请求接入选定供应商及受限的父子页面配置桥接 |
 | `assets/js/built-in-content.js`、`core-utils.js`、`data-services.js`、`runtime-services.js`、`assets/css/`、`tailwind.config.cjs`、`assets/vendor/` | 跟随上游 2.0.5 的公告、记忆引用、渲染、用量统计及主题；关键依赖按锁定版本构建到本地，Tailwind CSS 随后生成 |
@@ -40,7 +40,7 @@ GitHub Pages 已绑定正式域名。2026-10-28 的隔离 Chromium 验证首页�
 
 ### 同步、请求服务与隐私边界
 
-跨设备同步的实际入口是用户安装的 `rphub-sync.user.js`；同步内容使用项目既有的加密快照格式。`RP-Hub` 不再加载原生同步脚本，也不再显示同步表单，避免同一凭据同时进入用户脚本页面存储和网页存储。`assets/js/rphub-sync-*.js` 仅为过渡维护源码，不能据此认为主页面拥有另一套活动同步功能。
+跨设备同步的实际入口是用户安装的 `rphub-sync.user.js`；同步内容使用项目既有的加密快照格式。`RP-Hub` 不再加载原生同步脚本，也不再显示同步表单，避免同一凭据同时进入用户脚本页面存储和网页存储。四个 `assets/js/rphub-sync-*.js` 模块已于 2026-11-13 删除，`tests/upstream-compat.test.js` 断言它们保持不存在且不被 `index.html` 引用。
 
 `gateway/` 是独立的 Cloudflare Worker 源码，主页面不再读取或写入网关口令，也不通过设置页自动路由。可直接跨域的供应商继续由浏览器直连；不能跨域的请求沿用用户脚本的受控处理。若未来重新启用独立服务，必须重新完成认证、来源校验、限流、日志脱敏和真实流式验收，并先更新本文件。
 
@@ -182,3 +182,21 @@ RPHUB_CHROMIUM_PATH=/path/to/chrome npm run test:mobile
 产品与 Worker 测试 **37/37** 通过（原 33，新增 4 条 2.0.6 回归）；Sync 协调器 **78/78** 通过（新增 2 条脚本注入回归）；`npm run build:static` 可复现（改模板后需一并提交重算的 `assets/vendor/tailwind.css`）；`npm run check:static` 通过。协调器在 `app.js`、`index.html`、`character/index.html`、`novel/index.html`、`ui-components.js` 上均报告幂等。`npm run test:mobile` 在本机首次实跑通过：`/`、`/character/`、`/novel/` 三路由均挂载、无页面错误、无外部关键依赖（首页 `bootShell=ready`）。此前本机缺 Chromium；`npx playwright-core install chromium` 在本机下载停滞，改为直接取 Playwright CDN 的 `chrome-linux64.zip` 解压后以 `RPHUB_CHROMIUM_PATH` 指向该二进制。
 
 本轮不修改用户脚本、Card 或 Legacy。真实供应商 SSE、现有用户数据和多设备验收仍需单独进行。
+
+## 2026-11-13 协调器冻结与死代码清理
+
+**背景**：上游适配长期依赖 `RP-Hub-Sync` 的字符串补丁协调器，但两次上游更新都让它失效（2.0.6 删除识图模型导致 `replaceExactlyOnce` 锚点消失；部署页加 `data-cfasync` 导致 5 处精确标签匹配落空）。2.0.6 的实际适配全程是手工改产品代码，协调器没有参与迁移本身。
+
+**发现**：把 fixture 换成真实上游 `9124647` 快照后，Sync 测试立刻失败 10 条。逐条查证表明多条断言指向部署代码根本不产生的标记——`apiAdapters.buildChatRequest`、`secure workshop settings bridge v2`、`getApiConfigForModel('uiTemplateModel')`、以及上游已移除的 `rphub-presence-api` meta。这些测试靠合成 fixture 里人为塞进的标记通过，从未验证生产行为。
+
+**处置**：
+
+1. 删除 `assets/js/rphub-sync-{native,snapshot,crypto,github}.js`（679 行，零运行引用）及四个对应测试；改为在 `tests/upstream-compat.test.js` 断言这些文件保持不存在。
+2. `reconcileApp` 对不含 `requestTrackedChatCompletion` 标记的 app.js 改为**显式报错**并提示手工迁移。部署页始终走 `reconcileModernApp`，pre-1.9 inline-transport 分支在生产不可达，已冻结为参考实现，不再扩展。
+3. 冻结 `index.html` 协调器里 `document.write` + `Date.now()` 的旧加载路径（两者都违反移动端性能契约，部署页用静态 `<script defer data-cfasync="false">`）。
+4. 删除 17 条只驱动 pre-1.9 fixture 的测试和 4 个不再被加载的 fixture。Sync 协调器测试 78 → **61**。
+5. 适配流程写入 `RP-Hub-Sync/AGENTS.md` 与 `HANDOFF.md` 第 3.3 节：手工迁移的 7 步、两个已知冲突点（Gemini 混淆前缀 vs 数组 content、`data-cfasync` vs 精确标签匹配）、以及"补丁对不上时直接改产品代码，不要加新锚点"。
+
+**验证**：Sync 61/61、产品 23/23、`check:static` 通过；五个协调器在真实产品文件上仍全部幂等。
+
+**未做**：协调器 legacy 分支的 1015 行函数体本轮保留为参考，删除留作下一轮；不改 git 历史（重建带上游祖先的仓库是独立决策）；不动 userscript、Card、Legacy。
