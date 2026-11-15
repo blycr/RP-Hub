@@ -23,7 +23,7 @@ This project is open source under **[CC BY-NC 4.0 (Creative Commons Attribution-
 
 ### 1. Download and Run
 
-Download and extract the project, then double-click `index.html` to open it.
+Download and extract the project, run `npm ci && npm run build:static` when building from source, and serve the directory over a local HTTP(S) static server (opening `index.html` via `file://` is not supported).
 
 ### 2. Initial Setup
 

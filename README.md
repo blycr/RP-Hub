@@ -40,7 +40,7 @@ Roleplay Hub 致力于提供流畅、私密且功能强大的本地化AI Rolepla
 
 | 功能 | 本仓库中的主要文件 |
 | --- | --- |
-| 不限数量的 API 供应商，按“供应商 + 模型 ID”保存聊天、UI 模板、总结记忆、向量记忆和识图模型绑定 | `assets/js/app.js`、`index.html`、`assets/js/ui-components.js` |
+| 不限数量的 API 供应商，按“供应商 + 模型 ID”保存聊天、UI 模板、总结记忆和向量记忆模型绑定 | `assets/js/app.js`、`index.html`、`assets/js/ui-components.js` |
 | Chat Completions、Responses 与 Embeddings 路由；在上游 1.9 的原生工具调用中保留工具 ID 和续接结果 | `assets/js/api-utils.js`、`assets/js/app.js`、`assets/js/rphub-api-adapters.js` |
 | 角色卡工坊与小说页使用选定供应商，并通过受限的父子页面消息桥接配置 | `character/index.html`、`novel/index.html`、`assets/js/app.js` |
 | 支持广场官方的一键导入消息桥接；可接收来源标识并保存 `plazaId`，供角色卡生命周期管理使用；关闭不需要的远程版本提醒入口 | `assets/js/app.js`、`index.html` |
@@ -68,7 +68,7 @@ Roleplay Hub 致力于提供流畅、私密且功能强大的本地化AI Rolepla
 ### 2. 初始化设置
 1. 打开应用后，点击侧边栏（或顶部菜单）的**设置 (Settings)** 选项。
 2. 在 API 供应商设置中添加所需节点，分别配置 `API URL`、`API Key` 与支持的协议；可添加多个供应商。
-3. 为聊天、UI 模板、记忆或识图用途选择供应商与模型，也可手动输入模型 ID；支持推理的模型可设置推理强度。
+3. 为聊天、UI 模板或记忆用途选择供应商与模型，也可手动输入模型 ID；支持推理的模型可设置推理强度。
 4. 在**角色管理**界面，导入您的角色卡文件（或点击新建角色并手动填写设定）。
 5. 回到对话界面，开始属于您的 Roleplay 旅程
 
