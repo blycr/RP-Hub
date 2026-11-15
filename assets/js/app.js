@@ -709,13 +709,14 @@ const app = createApp({
                     settings[modelKey] = '';
                 }
             });
-            if (includeMemory && memorySettings.embeddingProviderId && !validIds.has(memorySettings.embeddingProviderId)) {
-                memorySettings.embeddingProviderId = '';
-                memorySettings.embeddingModel = '';
+            const resolvedMemorySettings = includeMemory ? (targetMemorySettings || memorySettings) : null;
+            if (resolvedMemorySettings && resolvedMemorySettings.embeddingProviderId && !validIds.has(resolvedMemorySettings.embeddingProviderId)) {
+                resolvedMemorySettings.embeddingProviderId = '';
+                resolvedMemorySettings.embeddingModel = '';
             }
-            if (includeMemory && memorySettings.classicProviderId && !validIds.has(memorySettings.classicProviderId)) {
-                memorySettings.classicProviderId = '';
-                memorySettings.classicModel = '';
+            if (resolvedMemorySettings && resolvedMemorySettings.classicProviderId && !validIds.has(resolvedMemorySettings.classicProviderId)) {
+                resolvedMemorySettings.classicProviderId = '';
+                resolvedMemorySettings.classicModel = '';
             }
             const validKeys = {};
             Object.entries(settings.apiProviderKeys || {}).forEach(([providerId, apiKey]) => {
@@ -982,7 +983,7 @@ const app = createApp({
                 delete nextModes[providerId];
                 settings.apiProviderModes = nextModes;
                 availableModels.value = availableModels.value.filter(model => model.providerId !== providerId);
-                settings.customApiUrl = '';
+                delete settings.customApiUrl;
                 if (settings.customApiUrl2) delete settings.customApiUrl2;
 
                 if (settings.apiProviderId === providerId) {
@@ -1187,6 +1188,40 @@ const app = createApp({
             }
         };
 
+        const buildNovelApiSettingsPayload = () => {
+            const mapNovelProvider = (provider) => {
+                try {
+                    const config = getProviderApiConfig(provider.id, { allowIncomplete: true });
+                    return { id: provider.id, name: provider.name, icon: provider.icon || '',
+                        apiUrl: config.apiUrl, apiKey: config.apiKey,
+                        chatProtocol: config.chatProtocol };
+                } catch (_) {
+                    return { id: provider.id, name: provider.name, icon: provider.icon || '',
+                        apiUrl: provider.apiUrl || '', apiKey: '',
+                        chatProtocol: getProviderModes(provider.id).chat };
+                }
+            };
+            return {
+                settings: { apiProviderId: settings.apiProviderId,
+                    apiProviderKeys: JSON.parse(JSON.stringify(settings.apiProviderKeys || {})),
+                    apiProviderModes: JSON.parse(JSON.stringify(settings.apiProviderModes || {})),
+                    apiKey: settings.apiKey },
+                providers: allApiProviderOptions.value.map(mapNovelProvider)
+            };
+        };
+        const syncSettingsToNovel = () => {
+            const iframe = getNovelFrame();
+            if (!iframe || !iframe.contentWindow) return;
+            try {
+                iframe.contentWindow.postMessage({
+                    type: 'RPHUB_API_SETTINGS_UPDATED',
+                    ...buildNovelApiSettingsPayload()
+                }, getEmbeddedFrameOrigin(iframe));
+            } catch (error) {
+                console.error('Novel settings sync failed:', error);
+            }
+        };
+
         let workshopImportPending = false;
         let squareImportPending = false;
         const getSquareFrame = () => document.querySelector(`iframe[src="${squareUrl.value}"]`);
@@ -1276,25 +1311,9 @@ const app = createApp({
                 const iframe = getNovelFrame();
                 if (!iframe || event.source !== iframe.contentWindow
                     || event.origin !== getEmbeddedFrameOrigin(iframe)) return;
-                const mapNovelProvider = (provider) => {
-                    try {
-                        const config = getProviderApiConfig(provider.id, { allowIncomplete: true });
-                        return { id: provider.id, name: provider.name, icon: provider.icon || '',
-                            apiUrl: config.apiUrl, apiKey: config.apiKey,
-                            chatProtocol: config.chatProtocol };
-                    } catch (_) {
-                        return { id: provider.id, name: provider.name, icon: provider.icon || '',
-                            apiUrl: provider.apiUrl || '', apiKey: '',
-                            chatProtocol: getProviderModes(provider.id).chat };
-                    }
-                };
                 event.source.postMessage({
                     type: 'RPHUB_API_SETTINGS', requestId: event.data.requestId,
-                    settings: { apiProviderId: settings.apiProviderId,
-                        apiProviderKeys: JSON.parse(JSON.stringify(settings.apiProviderKeys || {})),
-                        apiProviderModes: JSON.parse(JSON.stringify(settings.apiProviderModes || {})),
-                        apiKey: settings.apiKey },
-                    providers: allApiProviderOptions.value.map(mapNovelProvider)
+                    ...buildNovelApiSettingsPayload()
                 }, event.origin);
             }
         });
@@ -1316,6 +1335,7 @@ const app = createApp({
         watch(() => [
             settings.apiUrl,
             settings.apiKey,
+            settings.apiProviderId,
             settings.model,
             settings.modelProviderId,
             settings.customApiProviders,
@@ -1323,6 +1343,7 @@ const app = createApp({
             settings.apiProviderModes,
         ], () => {
             syncSettingsToGenerator();
+            syncSettingsToNovel();
         }, { deep: true });
 
         // Watch image gen and model settings for sync
@@ -3938,14 +3959,12 @@ const app = createApp({
                 .filter(config => config?.apiUrl && config?.apiKey);
 
             const results = await Promise.allSettled(configuredProviders.map(async config => {
-                const request = apiAdapters.buildModelListRequest({
-                    baseUrl: config.apiUrl,
+                const data = await requestJson({
+                    url: buildApiEndpoint(config.apiUrl, 'models'),
                     apiKey: config.apiKey,
+                    sessionId: getCurrentStoryBranchScopeId(),
+                    timeoutMs: 15000,
                 });
-                const response = await window.RPHubApiClient.fetchModelApi(
-                    request.url, request.init, getCurrentStoryBranchScopeId());
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const data = await response.json();
                 return apiAdapters.parseModelList(data).map(model => ({
                     ...model,
                     providerId: config.providerId,

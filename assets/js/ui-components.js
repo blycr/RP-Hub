@@ -999,9 +999,11 @@
             },
             selectManual() {
                 if (this.target === 'quickModels') {
-                    if (this.manualModelId && this.manualModelProviderId)
-                        this.chooseModel(this.manualModelId.trim(), this.manualModelProviderId);
-                    return;
+                    const modelId = String(this.manualModelId || '').trim();
+                    if (modelId && this.manualModelProviderId) {
+                        this.chooseModel(modelId, this.manualModelProviderId);
+                        return;
+                    }
                 }
                 this.$emit('select-manual');
             },

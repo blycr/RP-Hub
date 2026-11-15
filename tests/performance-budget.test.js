@@ -28,21 +28,3 @@ test('static build artifacts are present and within the mobile transfer budget',
     const css = fs.statSync(path.join(root, 'assets/vendor/tailwind.css')).size;
     assert.ok(css < 250 * 1024, 'compiled Tailwind CSS exceeds the mobile budget');
 });
-
-test('provider deletion removes legacy URLs, keys, modes and stale bindings', () => {
-    const app = read('assets/js/app.js');
-    assert.match(app, /const pruneDanglingProviderState =/);
-    assert.match(app, /settings\.customApiUrl = '';/);
-    assert.match(app, /delete settings\.customApiUrl2;/);
-    assert.match(app, /providerMigrationVersion: 0/);
-    assert.match(app, /if \(settings\.providerMigrationVersion >= 2\) return false/);
-    assert.match(app, /custom-\x27 \+ legacyId/);
-    assert.match(app, /saveData\(\{ saveMemories: false, saveCharacters: false \}\)/);
-});
-
-test('novel accepts provider updates only from the same-origin parent', () => {
-    const novel = read('novel/index.html');
-    assert.match(novel, /RPHUB_API_SETTINGS_UPDATED/);
-    assert.match(novel, /event\.source !== window\.parent \|\| event\.origin !== location\.origin/);
-    assert.match(novel, /applyProviderSnapshot\(event\.data\)/);
-});

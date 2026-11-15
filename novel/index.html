@@ -2224,7 +2224,7 @@
                         reject(new Error('RP-Hub 设置响应超时'));
                     }, 2000);
                     window.addEventListener('message', handleMessage);
-                    window.parent.postMessage({ type: 'REQUEST_RPHUB_API_SETTINGS', requestId }, '*');
+                    window.parent.postMessage({ type: 'REQUEST_RPHUB_API_SETTINGS', requestId }, location.origin);
                 });
 
                 const selectApiProvider = (provider, shouldSave = true) => {
@@ -2267,7 +2267,19 @@
                     try {
                         let syncData;
                         try { syncData = await requestRPHubSettingsFromParent(); }
-                        catch (_) { syncData = { settings: await readRPHubSettings() }; }
+                        catch (_) {
+                            const fallbackSettings = await readRPHubSettings();
+                            const builtinProviders = Array.isArray(window.RPHubConfig?.apiProviderOptions)
+                                ? window.RPHubConfig.apiProviderOptions
+                                : [];
+                            const customProviders = Array.isArray(fallbackSettings?.customApiProviders)
+                                ? fallbackSettings.customApiProviders
+                                : [];
+                            syncData = {
+                                settings: fallbackSettings,
+                                providers: [...builtinProviders, ...customProviders],
+                            };
+                        }
                         applyProviderSnapshot(syncData);
                         await saveData();
                         const configuredCount = apiProviders.value.filter(provider => provider.apiKey).length;
