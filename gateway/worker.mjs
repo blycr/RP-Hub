@@ -1,6 +1,8 @@
 const MAX_REQUEST_BYTES = 5 * 1024 * 1024;
 const ENDPOINTS = new Set(['models', 'chat/completions', 'responses', 'embeddings']);
 const RESPONSE_TYPES = new Set(['application/json', 'text/event-stream']);
+const OPENCODE_API_ORIGIN = 'https://opencode.ai';
+const OPENCODE_INFERENCE_PATH = /^\/inference\/go(?:\/|$)/;
 
 const exactOrigins = text => new Set(String(text || '').split(',').map(value => value.trim()).filter(Boolean));
 
@@ -76,7 +78,7 @@ export function createHandler(fetchProvider = fetch) {
                 headers: {
                     ...cors,
                     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-                    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-RPHub-Gateway-Token, X-RPHub-Target',
+                    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-RPHub-Gateway-Token, X-RPHub-Target, x-opencode-session',
                     'Access-Control-Max-Age': '600',
                 },
             });
@@ -95,20 +97,25 @@ export function createHandler(fetchProvider = fetch) {
         }
         try {
             const body = request.method === 'POST' ? await readBody(request.body) : undefined;
+            const forwardHeaders = {
+                Authorization: authorization,
+                Accept: 'application/json, text/event-stream',
+                ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+            };
+            const openCodeSession = request.headers.get('x-opencode-session');
+            if (openCodeSession && target.origin === OPENCODE_API_ORIGIN && OPENCODE_INFERENCE_PATH.test(target.pathname)) {
+                forwardHeaders['x-opencode-session'] = openCodeSession;
+            }
             const upstream = await fetchProvider(target, {
                 method: request.method,
-                headers: {
-                    Authorization: authorization,
-                    Accept: 'application/json, text/event-stream',
-                    ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-                },
+                headers: forwardHeaders,
                 ...(body === undefined ? {} : { body }),
                 redirect: 'manual',
                 signal: request.signal,
             });
             if (upstream.status >= 300 && upstream.status < 400) return respond(502, 'Provider redirect refused');
             const contentType = upstream.headers.get('Content-Type') || '';
-            if (!RESPONSE_TYPES.has(contentType.split(';', 1)[0].toLowerCase())) {
+            if (!RESPONSE_TYPES.has(contentType.split(';', 1)[0].trim().toLowerCase())) {
                 return respond(502, 'Unsupported provider response');
             }
             return new Response(upstream.body, {

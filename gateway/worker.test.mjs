@@ -85,3 +85,46 @@ test('refuses redirects and oversized bodies', async () => {
     const large = createHandler(async () => { throw new Error('must not fetch'); });
     assert.equal((await call(large, { body: 'x'.repeat(5 * 1024 * 1024 + 1) })).status, 413);
 });
+
+test('forwards x-opencode-session only for OpenCode Go targets and allows it in preflight', async () => {
+    const goOrigin = 'https://opencode.ai';
+    const goEnv = {
+        RPHUB_SITE_ORIGINS: site,
+        RPHUB_PROVIDER_ORIGINS: `${provider},${goOrigin}`,
+        RPHUB_GATEWAY_TOKEN: token,
+    };
+    const seen = [];
+    const handler = createHandler(async (url, init) => {
+        seen.push({ url: String(url), session: init.headers['x-opencode-session'] || null });
+        return new Response('{"data":[]}', { headers: { 'Content-Type': 'application/json; charset=utf-8' } });
+    });
+
+    const preflight = await handler(new Request('https://gateway.example/proxy', {
+        method: 'OPTIONS',
+        headers: {
+            Origin: site,
+            'Access-Control-Request-Method': 'POST',
+            'Access-Control-Request-Headers': 'authorization,content-type,x-rphub-gateway-token,x-rphub-target,x-opencode-session',
+        },
+    }), goEnv);
+    assert.equal(preflight.status, 204);
+    assert.match(preflight.headers.get('Access-Control-Allow-Headers'), /x-opencode-session/i);
+
+    const goRes = await handler(new Request('https://gateway.example/proxy', {
+        method: 'POST',
+        headers: { ...headers(`${goOrigin}/inference/go/openai/v1/chat/completions`), 'x-opencode-session': 'ses_rphub_12345678_a' },
+        body: '{}',
+    }), goEnv);
+    assert.equal(goRes.status, 200);
+
+    const otherRes = await handler(new Request('https://gateway.example/proxy', {
+        method: 'POST',
+        headers: { ...headers(`${provider}/v1/chat/completions`), 'x-opencode-session': 'ses_rphub_12345678_a' },
+        body: '{}',
+    }), goEnv);
+    assert.equal(otherRes.status, 200);
+    assert.deepEqual(seen, [
+        { url: `${goOrigin}/inference/go/openai/v1/chat/completions`, session: 'ses_rphub_12345678_a' },
+        { url: `${provider}/v1/chat/completions`, session: null },
+    ]);
+});
