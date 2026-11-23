@@ -1480,7 +1480,32 @@ ${content}
         if (!isRecord(parsed) || !Array.isArray(parsed.updates)) issues.push('变量块缺少有效的JSON更新内容');
         if (!issues.length && !updates.length) return updates;
         const templatesById = new Map(expectedTemplates.map(template => [String(template.id), template]));
+        const resolveTemplateId = (rawId) => {
+            const candidate = String(rawId || '').trim();
+            if (!candidate) return '';
+            if (templatesById.has(candidate)) return candidate;
+            const lower = candidate.toLowerCase();
+            const ciMatches = expectedTemplates.filter(template => String(template.id || '').toLowerCase() === lower);
+            if (ciMatches.length === 1) return String(ciMatches[0].id);
+            const nameMatches = expectedTemplates.filter(template => String(template.name || '').trim() === candidate);
+            if (nameMatches.length === 1) return String(nameMatches[0].id);
+            const normCandidate = lower.replace(/[^a-z0-9]/g, '');
+            if (normCandidate.length >= 8) {
+                const prefixMatches = expectedTemplates.filter(template => {
+                    const normTarget = String(template.id || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                    return normTarget.length >= 8 && normTarget.slice(0, 8) === normCandidate.slice(0, 8);
+                });
+                if (prefixMatches.length === 1) return String(prefixMatches[0].id);
+                const suffixMatches = expectedTemplates.filter(template => {
+                    const normTarget = String(template.id || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                    return normTarget.length >= 8 && normTarget.slice(-8) === normCandidate.slice(-8);
+                });
+                if (suffixMatches.length === 1) return String(suffixMatches[0].id);
+            }
+            return '';
+        };
         const receivedById = new Map();
+        const normalizedUpdates = [];
         updates.forEach((update, index) => {
             const location = '第 ' + (index + 1) + ' 项';
             if (!isRecord(update)) { issues.push(location + '不是有效对象'); return; }
@@ -1489,11 +1514,13 @@ ${content}
             const unknownFields = Object.keys(update).filter(key => !['id', 'variables'].includes(key));
             if (unknownFields.length) issues.push(location + '包含未定义字段：' + unknownFields.join('、'));
             const explicitId = typeof update.id === 'string' ? update.id.trim() : '';
-            const id = explicitId || (expectedTemplates.length === 1 ? String(expectedTemplates[0].id) : '');
-            if (!id) { issues.push(expectedTemplates.length > 1 ? location + '缺少模板ID；多模板必须使用JSON数组成员的 id 字段' : location + '缺少有效模板ID'); return; }
-            if (!templatesById.has(id)) { issues.push(location + '使用了未知模板ID“' + id + '”'); return; }
+            const rawId = explicitId || (expectedTemplates.length === 1 ? String(expectedTemplates[0].id) : '');
+            if (!rawId) { issues.push(expectedTemplates.length > 1 ? location + '缺少模板ID；多模板必须使用JSON数组成员的 id 字段' : location + '缺少有效模板ID'); return; }
+            const id = resolveTemplateId(rawId);
+            if (!id) { issues.push(location + '使用了未知模板ID“' + rawId + '”'); return; }
             if (!receivedById.has(id)) receivedById.set(id, []);
             receivedById.get(id).push({ variables: update.variables });
+            normalizedUpdates.push({ id, variables: update.variables });
         });
         const dynamicSamplesFor = (expected, path, schemaText) => {
             if (!path) return undefined;
@@ -1543,7 +1570,7 @@ ${content}
             if (invalidNames.length) issues.push('模板“' + label + '”变量类型或结构错误：' + invalidNames.join('、'));
         });
         if (issues.length) throw new Error(issues.join('；'));
-        return updates;
+        return normalizedUpdates;
     };
     const applyUiTemplateUpdateListToTemplate = (template, updates, { model = '', turn = null, source = 'ai' } = {}) => {
         let fieldCount = 0;

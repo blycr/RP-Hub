@@ -236,3 +236,57 @@ test('ensureInitialUiTemplateBlocks attaches initial panels on fresh opening loa
     // Second non-forced call is idempotent no-op
     assert.equal(h.exports.ensureInitialUiTemplateBlocks(), false);
 });
+
+test('normalizeUiTemplateUpdateList recovers minor LLM UUID typos and template names while rejecting unknown IDs', () => {
+    const windowObj = {
+        RPHubBuiltinContent: { prompts: {} },
+        RPHubUtils: { generateUUID: () => 'u', deepClone: (v) => JSON.parse(JSON.stringify(v)) },
+        RPHubCardUtils: { findLastUnprotectedMatch: () => null },
+        DOMPurify: { sanitize: (html) => String(html || '') },
+        marked: { parse: (md) => String(md || '') },
+    };
+    const dsCtx = { window: windowObj, console, URL, Date, Math, JSON, Object, Array, Set, Map, RegExp, String, Number, Boolean, Error };
+    vm.createContext(dsCtx);
+    vm.runInContext(dataServicesSrc, dsCtx);
+    const uiUtils = windowObj.RPHubUiTemplateUtils;
+
+    const templates = [
+        uiUtils.normalizeUiTemplate({
+            id: '28931f97-cbab-4c9c-9cd8-c92eb30696b8',
+            name: '种付都市状态栏',
+            initialVariableState: { day: 1 },
+        }),
+        uiUtils.normalizeUiTemplate({
+            id: '231163c7-b222-45a0-a5b5-8c82f3154242',
+            name: '种付都市地图',
+            initialVariableState: { location: '种名车站' },
+        }),
+        uiUtils.normalizeUiTemplate({
+            id: 'fa794e6c-fd7d-4012-9336-3ab1fb060a8e',
+            name: '种付都市快捷推进面板',
+            initialVariableState: { scene_tip: '初始' },
+        }),
+    ];
+
+    // Real-world failure case: LLM corrupted 3 tail hex chars in template 3's 36-char UUID,
+    // and used template name for template 2.
+    const parsed = {
+        updates: [
+            { id: '28931f97-cbab-4c9c-9cd8-c92eb30696b8', variables: { day: 2 } },
+            { id: '种付都市地图', variables: { location: '图书馆' } },
+            { id: 'fa794e6c-fd7d-4012-9336-3ab1c960a8e', variables: { scene_tip: '新提示' } },
+        ],
+    };
+    const normalized = uiUtils.normalizeUiTemplateUpdateList(parsed, templates);
+    assert.equal(normalized[1].id, '231163c7-b222-45a0-a5b5-8c82f3154242');
+    assert.equal(normalized[2].id, 'fa794e6c-fd7d-4012-9336-3ab1fb060a8e');
+
+    // Genuinely unknown ID is still rejected
+    assert.throws(
+        () => uiUtils.normalizeUiTemplateUpdateList(
+            { updates: [{ id: '99999999-0000-0000-0000-000000000000', variables: { day: 2 } }] },
+            templates,
+        ),
+        /未知模板ID/,
+    );
+});
