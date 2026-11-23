@@ -117,6 +117,13 @@ test('forwards x-opencode-session only for OpenCode Go targets and allows it in 
     }), goEnv);
     assert.equal(goRes.status, 200);
 
+    const zenGoRes = await handler(new Request('https://gateway.example/proxy', {
+        method: 'POST',
+        headers: { ...headers(`${goOrigin}/zen/go/v1/chat/completions`), 'x-opencode-session': 'ses_rphub_12345678_b' },
+        body: '{}',
+    }), goEnv);
+    assert.equal(zenGoRes.status, 200);
+
     const otherRes = await handler(new Request('https://gateway.example/proxy', {
         method: 'POST',
         headers: { ...headers(`${provider}/v1/chat/completions`), 'x-opencode-session': 'ses_rphub_12345678_a' },
@@ -125,6 +132,7 @@ test('forwards x-opencode-session only for OpenCode Go targets and allows it in 
     assert.equal(otherRes.status, 200);
     assert.deepEqual(seen, [
         { url: `${goOrigin}/inference/go/openai/v1/chat/completions`, session: 'ses_rphub_12345678_a' },
+        { url: `${goOrigin}/zen/go/v1/chat/completions`, session: 'ses_rphub_12345678_b' },
         { url: `${provider}/v1/chat/completions`, session: null },
     ]);
 });

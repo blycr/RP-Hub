@@ -5,7 +5,7 @@
     const buildApiEndpoint = (baseUrl, path) => {
         const root = String(baseUrl || '').replace(/\/+$/, '');
         const endpoint = String(path || '').replace(/^\/+/, '');
-        if (/^https:\/\/opencode\.ai\/inference\/go\/v1$/i.test(root)) {
+        if (/^https:\/\/opencode\.ai\/inference\/go(?:\/v1)?$/i.test(root)) {
             // Go's model list is native; chat and embeddings use the OpenAI subpath.
             return endpoint === 'models'
                 ? `https://opencode.ai/inference/go/v1/${endpoint}`
@@ -33,7 +33,7 @@
     ];
 
     const OPENCODE_API_ORIGIN = 'https://opencode.ai';
-    const OPENCODE_INFERENCE_PATH = /^\/inference\/go(?:\/|$)/;
+    const OPENCODE_INFERENCE_PATH = /^\/(?:inference|zen)\/go(?:\/|$)/i;
     const OPENCODE_SESSION_PATTERN = /^(?:ses_|sess_)[A-Za-z0-9._:-]{12,124}$/;
     const stableSessionId = (value) => {
         const text = String(value || '').trim();
@@ -57,6 +57,8 @@
     const withProviderHeaders = (headers, url, sessionId) => {
         const next = new Headers(headers);
         if (!isOpenCodeApiUrl(url)) return next;
+        const existing = next.get('x-opencode-session') || '';
+        if (!String(sessionId || '').trim() && OPENCODE_SESSION_PATTERN.test(existing)) return next;
         next.set('x-opencode-session', stableSessionId(sessionId));
         return next;
     };
@@ -198,7 +200,7 @@
                     options.url, options.sessionId),
                 ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
                 signal: controller.signal
-            });
+            }, options.sessionId);
             touch();
             if (!response.ok) {
                 const text = await response.text();

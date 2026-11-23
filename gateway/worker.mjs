@@ -2,7 +2,7 @@ const MAX_REQUEST_BYTES = 5 * 1024 * 1024;
 const ENDPOINTS = new Set(['models', 'chat/completions', 'responses', 'embeddings']);
 const RESPONSE_TYPES = new Set(['application/json', 'text/event-stream']);
 const OPENCODE_API_ORIGIN = 'https://opencode.ai';
-const OPENCODE_INFERENCE_PATH = /^\/inference\/go(?:\/|$)/;
+const OPENCODE_INFERENCE_PATH = /^\/(?:inference|zen)\/go(?:\/|$)/i;
 
 const exactOrigins = text => new Set(String(text || '').split(',').map(value => value.trim()).filter(Boolean));
 

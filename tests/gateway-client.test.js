@@ -29,7 +29,7 @@ const makeClient = fetch => {
     };
     vm.runInNewContext(source, { window, fetch, URL, Headers, AbortController, TextDecoder,
         setTimeout, clearTimeout, setInterval, clearInterval, console });
-    return { client: window.RPHubApiClient, session };
+    return { client: window.RPHubApiClient, utils: window.RPHubApiUtils, session };
 };
 
 test('routes only selected HTTPS model origins and preserves provider authorization', async () => {
@@ -60,25 +60,48 @@ test('routes only selected HTTPS model origins and preserves provider authorizat
 
 test('adds OpenCode Go headers only to the Go API and keeps sessions stable', async () => {
     const requests = [];
-    const { client } = makeClient(async (url, init) => {
+    const { client, utils } = makeClient(async (url, init) => {
         requests.push({ url: String(url), init });
         if (String(url).endsWith('/models')) return new Response('{"data":[]}', { headers: { 'Content-Type': 'application/json' } });
         return new Response('{"choices":[{"message":{"content":"ok"}}]}', { headers: { 'Content-Type': 'application/json' } });
     });
-    const sessionId = 'character-uuid__branch__branch-uuid';
+    assert.equal(
+        utils.buildApiEndpoint('https://opencode.ai/inference/go', 'chat/completions'),
+        'https://opencode.ai/inference/go/openai/v1/chat/completions',
+    );
+    assert.equal(
+        utils.buildApiEndpoint('https://opencode.ai/inference/go', 'models'),
+        'https://opencode.ai/inference/go/v1/models',
+    );
+    assert.equal(
+        utils.buildApiEndpoint('https://opencode.ai/zen/go', 'chat/completions'),
+        'https://opencode.ai/zen/go/v1/chat/completions',
+    );
+    const sessionA = 'character-a__branch__branch-1';
+    const sessionB = 'character-b__branch__branch-2';
     await client.requestChatCompletion({
         url: 'https://opencode.ai/inference/go/openai/v1/chat/completions',
-        apiKey: 'key', model: 'go-model', sessionId,
+        apiKey: 'key', model: 'go-model', sessionId: sessionA,
         messages: [{ role: 'user', content: 'hello' }],
     });
     await client.requestJson({
-        url: 'https://opencode.ai/inference/go/v1/models', apiKey: 'key', sessionId,
+        url: 'https://opencode.ai/inference/go/v1/models', apiKey: 'key', sessionId: sessionA,
     });
-    await client.requestJson({ url: 'https://example.test/v1/models', apiKey: 'key', sessionId });
-    assert.match(requests[0].init.headers.get('x-opencode-session'), /^ses_rphub_[0-9a-f]{8}_[0-9a-f]+$/);
-    assert.match(requests[1].init.headers.get('x-opencode-session'), /^ses_rphub_[0-9a-f]{8}_[0-9a-f]+$/);
-    assert.equal(requests[0].init.headers.get('x-opencode-session'), requests[1].init.headers.get('x-opencode-session'));
-    assert.equal(requests[2].init.headers.has('x-opencode-session'), false);
+    await client.requestChatCompletion({
+        url: 'https://opencode.ai/zen/go/v1/chat/completions',
+        apiKey: 'key', model: 'go-model', sessionId: sessionB,
+        messages: [{ role: 'user', content: 'hello' }],
+    });
+    await client.requestJson({ url: 'https://example.test/v1/models', apiKey: 'key', sessionId: sessionA });
+    const headerA1 = requests[0].init.headers.get('x-opencode-session');
+    const headerA2 = requests[1].init.headers.get('x-opencode-session');
+    const headerB = requests[2].init.headers.get('x-opencode-session');
+    assert.match(headerA1, /^ses_rphub_[0-9a-f]{8}_[0-9a-f]+$/);
+    assert.equal(headerA1, headerA2);
+    assert.equal(headerA1, client.stableOpenCodeSession(sessionA));
+    assert.equal(headerB, client.stableOpenCodeSession(sessionB));
+    assert.notEqual(headerA1, headerB);
+    assert.equal(requests[3].init.headers.has('x-opencode-session'), false);
     assert.equal(requests[1].url, 'https://opencode.ai/inference/go/v1/models');
 });
 
