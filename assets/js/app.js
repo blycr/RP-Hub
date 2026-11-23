@@ -3130,6 +3130,20 @@ const app = createApp({
             return top.length > 0 || bottom.length > 0;
         };
 
+        const ensureInitialUiTemplateBlocks = ({ force = false } = {}) => {
+            if (!settings.uiTemplateEnabled || !activeUiTemplates.value.length) return false;
+            if (chatHistory.value.length !== 1) return false;
+            const openingMsg = chatHistory.value[0];
+            if (!openingMsg || openingMsg.role !== 'assistant') return false;
+            const hasBlocks = Boolean(
+                openingMsg.uiTemplateBlocks
+                && ((openingMsg.uiTemplateBlocks.top && openingMsg.uiTemplateBlocks.top.length)
+                    || (openingMsg.uiTemplateBlocks.bottom && openingMsg.uiTemplateBlocks.bottom.length))
+            );
+            if (!force && hasBlocks) return false;
+            return attachUiTemplateBlocksToLastAssistant();
+        };
+
         const getAssistantTurnAtIndex = (index) => {
             const normalizedIndex = Math.max(0, Math.min(index, chatHistory.value.length - 1));
             return getConversationTurnAtIndex(normalizedIndex);
@@ -3248,7 +3262,7 @@ const app = createApp({
         const resetUiTemplateRuntimeState = () => {
             abortUiTemplateUpdate();
             currentUiTemplates.value.forEach(template => {
-                template.variableState = cloneUiObject(template.initialVariableState || {});
+                template.variableState = cloneUiObject(inferInitialUiTemplateState(template));
                 template.changeLog = [];
             });
             saveGlobalUiTemplateRuntimeForCharacter();
@@ -4360,6 +4374,7 @@ const app = createApp({
                 }
                 classicMemories.value = [];
                 resetUiTemplateRuntimeState();
+                ensureInitialUiTemplateBlocks({ force: true });
                 saveData();
                 showToast('聊天记录、记忆和变量记录已清空', 'success');
             });
@@ -4807,6 +4822,7 @@ const app = createApp({
                     await removeClassicMemoriesForConversationTurn(snapshot, affectedTurn);
                 }
                 chatHistory.value = nextHistory;
+                ensureInitialUiTemplateBlocks();
                 restoreSecondaryClassicMemoriesForTurnCount(
                     buildConversationTurnSnapshot(nextHistory, { includeSystem: false }).turns.length
                 );
@@ -7829,6 +7845,7 @@ const app = createApp({
                 chatHistory.value = sourceChatHistory;
                 classicMemories.value = numberClassicMemories(prepareClassicMemoriesForRuntime(branchClassicMemories));
                 _classicMemoriesLoaded = true;
+                ensureInitialUiTemplateBlocks();
                 clearStoryBranchTransientContext();
                 finishApplyingCharacterScopedData();
                 selectedStoryBranchId.value = branchId;
@@ -7883,6 +7900,7 @@ const app = createApp({
                 classicMemories.value = numberClassicMemories(prepareClassicMemoriesForRuntime(savedClassicMemories));
                 _classicMemoriesLoaded = true;
                 loadGlobalUiTemplateRuntimeForCharacter(char);
+                ensureInitialUiTemplateBlocks();
                 clearStoryBranchTransientContext();
                 updateCurrentStoryBranchSummary();
                 finishApplyingCharacterScopedData();
@@ -8018,6 +8036,7 @@ const app = createApp({
 
             // Load Character Specific Data
             applyCharacterScopedResources(char);
+            ensureInitialUiTemplateBlocks();
             clearStoryBranchTransientContext();
             finishApplyingCharacterScopedData();
 
