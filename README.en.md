@@ -7,122 +7,107 @@
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
 [![DaisyUI](https://img.shields.io/badge/DaisyUI-5A0EF8?logo=daisyui&logoColor=white)](https://daisyui.com/)
 
-> **A roleplay chat and character card creation tool that primarily stores data locally in your browser.**
+A local-first AI roleplay chat and character card creation web app customized from [`STA1N156/RP-Hub`](https://github.com/STA1N156/RP-Hub) (upstream baseline: `2.0.6` / `9124647`). Live site: [https://rp.blycr.xyz/](https://rp.blycr.xyz/).
 
-This is the customized production repository based on [STA1N156/RP-Hub](https://github.com/STA1N156/RP-Hub), with an independent Git history. The live site is [rp.blycr.xyz](https://rp.blycr.xyz/). On 2026-11-13 it was updated to upstream commit `9124647` (the upstream announcement is **2.0.6**). Images are now read directly by the chat model instead of a separate vision model, model settings are shown as one list, unfocused secret inputs no longer reserve button padding, and the default API endpoint moved to sta1n.ai. The 2.0.5 behaviours adopted earlier (automatic Gemini input obfuscation with a fresh per-request prefix, secret copy/show controls, usage duration fixes and chat-import fixes) are retained. It retains unlimited custom providers, provider-specific model selection, Chat Completions, Responses and Embeddings. The upstream plaintext cloud backup is intentionally not wired; the installed userscript remains responsible for encrypted cross-device snapshots. The retired in-page gateway and native-sync settings cards are no longer shown or loaded. Ownership, changed files and release procedures are kept in the private maintenance repository.
+> See [CHANGELOG.md](./CHANGELOG.md) for version history.
 
-The public repository contains the website. The private Sync repository maintains the userscript, encrypted snapshots and patch sources; the private Card repository serves local card resources. Legacy is a private archived snapshot. Existing userscripts and snapshots should be retained until data migration is verified. Updating the website does not update an installed userscript.
+## Features
 
-**Disclaimer and Licensing Notice**
+### Core App
+- **Local-First Storage**: Characters, worldbooks, regex scripts, personas, and chats are stored in your browser's IndexedDB.
+- **Multimodal & Memory**: Chat models read images directly; supports basic turn summaries, enhanced embedding recall (≥ 48% similarity, up to 10 memories), secondary compression, background backfill, and inline memory citations.
+- **Story Branches & UI Templates**: Branching, rollback, import/export, and interactive status panels (initial UI template panels automatically re-attach on chat reset or fresh branches).
+- **Tools & Compatibility**: Keyword history search, Tavily web search, RNG tool, Gemini anti-truncation (`output_reply`), and automatic Gemini input obfuscation (`read_user_input`, automatically skipped for array image payloads).
+- **Built-in Tools**: Character Card Workshop (`/character/`), Novel workspace (`/novel/`), and Plaza one-click import.
 
-This project is open source under **[CC BY-NC 4.0 (Creative Commons Attribution-NonCommercial 4.0 International)](./LICENSE)**. **Commercial use is strictly prohibited, including selling the project as a service, bundling it into paid products, or monetizing it through advertising.** Users must comply with the license and respect the original author's right to attribution. The author reserves the right to pursue legal remedies for unauthorized commercial use.
-
----
+### Customizations Over Upstream
+- **Unlimited Providers & Multi-Protocol Routing**: Bind chat, UI template, summary, and embedding models independently by `(providerId, modelId)`. Supports `Chat Completions`, `Responses`, `OpenAI Embeddings`, and per-branch OpenCode Go sessions (`x-opencode-session`).
+- **Self-Hosted Static Delivery**: Vue, marked, DOMPurify, SortableJS, localForage, and compiled Tailwind CSS are pinned and committed under `assets/vendor/` with a startup watchdog (`assets/js/boot.js`) to eliminate mobile CDN white screens.
+- **Privacy Defaults**: Upstream plaintext cloud backup is intentionally omitted; remote update-check/presence polling is disabled by default.
 
 ## Quick Start
 
-### 1. Download and Run
+### Hosted Site
 
-Download and extract the project, run `npm ci && npm run build:static` when building from source, and serve the directory over a local HTTP(S) static server (opening `index.html` via `file://` is not supported).
+Open [https://rp.blycr.xyz/](https://rp.blycr.xyz/), configure one or more API providers under **Settings** (base URL or `/v1`, without `/chat/completions`), bind models per role, and import or create a character card.
 
-### 2. Initial Setup
+> Direct browser requests require the target API endpoint to permit CORS for your origin.
 
-1. Open **Settings** from the navigation menu. Choose a provider or add custom connections; multiple custom providers are supported.
-2. Enter each provider's API URL and key, choose Chat Completions or Responses and configure embedding support. Bind each model to its provider, or enter a model ID manually. Use the service's base URL or a URL ending in `/v1`; do not include `/chat/completions`.
-3. Open **Character Card Management** to import a JSON / PNG card or create a new one. The Character Card Workshop can also generate, edit, and export cards, with one-click import and play.
-4. Configure a summary model, embedding model, image generation key, and Tavily key as needed. Features you do not use require no setup.
+### Local Build & Verification
 
-The API must allow requests from your browser page through CORS. A working webpage and a valid key do not necessarily mean the API permits direct browser access.
+Requires **Node.js >= 22**.
 
-Use the HTTPS production site for cross-origin model access. Encrypted cross-device sync is handled by the installed userscript. The chat quick panel preserves preset slots and reasoning controls, with an additional direct model picker that keeps provider identity for duplicate model IDs.
+```bash
+# Install locked dependencies
+npm ci
 
-The upstream update also adds cached style filtering, large-avatar Blob URLs, a workshop reasoning panel, plaza theme synchronization, and the Novel page book-review panel.
+# Rebuild assets/vendor/, run static delivery checks, and run all unit tests
+npm run verify
 
-For Gemini models, input obfuscation runs automatically. The complete latest user message, including applicable world-book and recall additions, is passed as a paired `read_user_input` tool exchange. A new invisible prefix is generated before every real request, including retries. Tool-capable APIs are required for this mechanism.
+# Serve locally over HTTP (file:// is not supported)
+npx serve .
+# or: python3 -m http.server 8080
+```
 
-## Memory, Tools, and Compatibility Mode
+### Mobile Slow-Network Smoke Test (Optional)
 
-### Memory System
-
-- **Basic Mode**: A summary model creates a memory for each conversation turn. Beyond the “Keep Recent Messages” limit, older AI response bodies are replaced with their corresponding summaries in the outgoing context. The original chat is not deleted.
-- **Enhanced Mode**: Reuses the same summaries and generates embeddings from each original user input and its corresponding summary. Based on the latest input, it retrieves up to **10 memories** with a similarity of at least **48%**, appending them to the latest user message in their original chronological order for the current request only.
-- **Secondary Compression**: Individual summaries are kept for the most recent **25 turns**. Earlier history is compressed in groups of **5 turn positions**. Confirmed empty turns without response text can be skipped; turns with response text but failed summaries must be filled in. Original per-turn summaries remain stored after compression. Enhanced retrieval uses those per-turn summaries, not the compressed groups.
-- **Backfill**: A dialog shows progress and estimated completion times for per-turn summaries, embeddings, and secondary compression as needed. Enhanced Mode requires an embedding model for backfill. After changing embedding models, regenerate the embeddings. Background backfill waits for the current response to finish before continuing.
-
-A message and a turn are different units: one user input followed by one AI response normally counts as two messages and one turn. Legacy Vector Mode settings migrate to Enhanced Mode, but old response chunks do not automatically become the new vector memories. Storage Management counts them as unused leftovers that can be removed after user confirmation.
-
-### Tools
-
-- **Keyword Search**: Finds original text snippets in the current conversation history. It does not search the web.
-- **Web Search**: Uses Tavily to search the web or read webpages. Requires a separately configured Tavily API key.
-- **Random Generation**: The model supplies a lower and upper bound, and the program generates a random integer including both endpoints. Alternatively, it can supply candidate names, such as items or locations, and the program selects one with equal probability. User-specified ranges or choices are preserved; duplicate names count only once.
-
-Tool usage can be set to **Adaptive** or **Forced**. Both the model and API must support `tools` / `tool_choice`. The search result count setting does not change Enhanced Memory's fixed maximum of 10 retrieved memories.
-
-### Gemini Anti-Truncation
-
-Gemini Anti-Truncation in the main chat submits response text through the `output_reply` tool. It does not provide unlimited continuation or increase the model's output limit. If no tool response text is returned but regular response text is available, the regular text is displayed. Automatic retries occur only when the response contains no text, reasoning, or tool calls, with a maximum of **3 requests in total**. APIs without tool support may still fail.
-
-The Character Card Workshop's **Compatibility Mode Retry** also submits content through a tool instead of switching to a non-streaming request.
-
----
+```bash
+npx playwright-core install chromium
+RPHUB_CHROMIUM_PATH=$(find ~/.cache/ms-playwright -path '*/chrome-linux*/chrome' -type f -print -quit) npm run test:mobile
+```
 
 ## Directory Structure
 
 ```text
 RP-Hub/
-├── index.html                     # Main interface and script entry point
-├── character/                     # Character card generation tool
-│   └── index.html
-├── novel/                         # Novel generation and editing
-│   └── index.html
+├── index.html                        # Main chat app entry point
+├── character/index.html              # Character Card Workshop
+├── novel/index.html                  # Novel workspace
+├── favicon.svg
+├── CNAME
 ├── assets/
+│   ├── vendor/                       # Committed pinned vendor scripts and compiled tailwind.css
 │   ├── css/
-│   │   ├── styles.css             # Main page styles
-│   │   └── theme.css              # Shared design tokens (palette, shadows, motion, dark mode)
+│   │   ├── styles.css
+│   │   ├── tailwind-source.css
+│   │   └── theme.css
 │   └── js/
-│       ├── built-in-content.js    # Default presets, mode prompts, artist tags, and announcements
-│       ├── core-utils.js          # Shared utilities, character card handling, and configuration
-│       ├── api-utils.js           # HTTP, streaming, tool calls, and empty-response retries
-│       ├── data-services.js       # Storage, memory, context, branches, and UI state
-│       ├── runtime-services.js    # Message rendering, usage tracking, and storage management
-│       ├── theme.js               # Theme persistence and embedded page synchronization
-│       ├── update-check.js        # Optional remote version checks
-│       ├── ui-components.js       # Navigation, selectors, dialogs, and page components
-│       ├── rphub-api-adapters.js   # Customized protocol adapters
-│       ├── rphub-sync-*.js         # Migration maintenance modules; not loaded by the site
-│       └── app.js                 # Main application logic and page state
-├── gateway/                       # Optional controlled model request Worker source; not loaded by the site
-├── tests/                         # Product compatibility and migration tests
-├── presence-server/               # Optional update-check service, not a chat backend
-│   └── README.md                  # Deployment, environment variables, and endpoints
-├── LICENSE
-├── README.en.md                   # English documentation
-└── README.md                      # Chinese documentation (default)
+│       ├── boot.js                   # Startup watchdog and cache recovery UI
+│       ├── tailwind-theme.js
+│       ├── theme.js
+│       ├── built-in-content.js       # Presets, prompts, artist styles, and announcements
+│       ├── core-utils.js             # Shared helpers and card parsing
+│       ├── api-utils.js              # Native HTTP/SSE client, tools, Responses, OpenCode Go
+│       ├── rphub-api-adapters.js     # Protocol adapters (Chat Completions / Responses / Embeddings)
+│       ├── data-services.js          # Storage, memory, context, branches, UI template state
+│       ├── runtime-services.js       # Rendering, usage tracking, storage management
+│       ├── presence.js               # Upstream inert file (disabled)
+│       ├── update-check.js           # Upstream inert file (disabled)
+│       ├── ui-components.js          # Modals, pickers, and shared UI components
+│       └── app.js                    # Application entry, provider registry, and state
+├── scripts/
+│   ├── build-static.mjs              # Builds assets/vendor/ and compiled Tailwind CSS
+│   └── check-static.mjs              # Enforces static delivery contract
+├── tests/                            # Behavioral, compatibility, UI reset, budget, and mobile tests
+├── gateway/                          # Optional standalone Cloudflare Worker (not loaded by site)
+├── presence-server/                  # Optional upstream update-check server (disabled by default)
+├── tailwind.config.cjs
+├── package.json
+├── CHANGELOG.md
+├── LICENSE                           # CC BY-NC 4.0
+├── README.en.md
+└── README.md
 ```
 
-### Optional Update-Check Service
+## Optional Standalone Components
 
-Set the service URL in `rphub-update-api` in `index.html`; leave it empty to disable remote version checks. The main page checks approximately every 20 seconds while visible. Failures do not affect chat. The service does not store chats, character cards, or API keys, and no longer tracks online user counts.
-
-Deploying the service requires Node.js 20 or later. See [`presence-server/README.md`](./presence-server/README.md) for details. You do not need to deploy it to use the main webpage. If you maintain your own fork, also change the version file URL read by the service to avoid receiving update notifications for the upstream project.
-
----
-
-## Build and Automated Checks
-
-The product remains a static site, but its critical browser dependencies are pinned and committed so mobile users do not depend on public CDNs. After checkout or a dependency change, run `npm ci`, `npm run verify`, and `npm run test:mobile` (set `RPHUB_CHROMIUM_PATH` locally). Verification rebuilds `assets/vendor/` and the minimized Tailwind stylesheet, rejects direct critical CDN use, `document.write`, or unstable local cache parameters, and runs the product and gateway tests. The mobile check runs at 390×844 with throttled networking and CPU. GitHub Actions installs Chromium and repeats these checks. Generated files are committed, so GitHub Pages needs no build tool, extra secret, or manual deployment step.
+- **`gateway/`**: Optional controlled Cloudflare Worker source for relaying model API calls (not loaded by the static site). See [`gateway/README.md`](./gateway/README.md).
+- **`presence-server/`**: Optional upstream version-check server (stores no chats or keys). See [`presence-server/README.md`](./presence-server/README.md).
 
 ## License
 
-This project follows:
+Licensed under **[Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)](./LICENSE)**:
 
-**[Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)](https://creativecommons.org/licenses/by-nc/4.0/)**
-
-- **You may**: Share the work in any medium or format, and adapt, transform, or build upon it.
-- **You must comply with**:
-  - **Attribution**: Give appropriate credit, link to the license, and indicate whether changes were made.
-  - **NonCommercial**: **You may not use the work or adaptations for commercial purposes.** Selling it, integrating it into paid subscriptions, or monetizing it through advertising is prohibited.
-- For commercial licensing, contact the original author directly.
-
-See the [`LICENSE`](./LICENSE) file in the project root for the full terms.
+- **Share & Adapt**: You may copy, redistribute, and adapt the material in any medium or format.
+- **Attribution**: You must give appropriate credit, link to the license, and indicate changes made.
+- **NonCommercial**: **Commercial use is strictly prohibited** (paid hosting, commercial bundling, or ad monetization). Contact the original author for commercial licensing.

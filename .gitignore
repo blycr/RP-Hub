@@ -1,8 +1,14 @@
 RP-Hub-Sync-Plan.md
-.serena/
 RP-Hub-Asset-Reconstruct-Plan.md
 RP-Hub-Test-Handover.md
 node_modules/
+coverage/
+*.log
+.DS_Store
+.vscode/
+.claude/
+.serena/
+.zcode/
 
 # This repository is public. Keep agent instructions and internal process
 # records (maintenance reviews, handoffs, release procedures) out of it; they

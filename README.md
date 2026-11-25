@@ -7,167 +7,117 @@
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
 [![DaisyUI](https://img.shields.io/badge/DaisyUI-5A0EF8?logo=daisyui&logoColor=white)](https://daisyui.com/)
 
-> **一款纯前端运行的本地角色扮演（Roleplay）对话和角色卡生成工具。**
+基于 [`STA1N156/RP-Hub`](https://github.com/STA1N156/RP-Hub)（当前基线：上游 `2.0.6` / `9124647`）的纯前端定制站点，数据保存在浏览器本地 IndexedDB，在线地址：[https://rp.blycr.xyz/](https://rp.blycr.xyz/)。
 
-> **这是基于 [`STA1N156/RP-Hub`](https://github.com/STA1N156/RP-Hub) 的定制站点正式仓库，采用独立的干净 Git 历史。** `rp.blycr.xyz` 已由本仓库发布。本站直接修改页面、模型状态和 API 请求代码，实现多供应商、自由选模与兼容协议推理服务。跨设备同步继续由已安装的用户脚本负责；同步数据仍是加密快照，站点自身的原生同步与请求网关入口已隐藏，保留的源码只供维护与独立部署。维护边界属于仓库内部维护记录，不再随站点发布。
+> 变更记录见 [CHANGELOG.md](./CHANGELOG.md)。
 
-正式地址：[https://rp.blycr.xyz/](https://rp.blycr.xyz/)。更新网站不会自动更新浏览器里已安装的用户脚本。现有用户数据与真实模型流式调用仍需验收；在确认迁移完成前不要卸载用户脚本或删除远端快照。
+## 核心特性
 
-2026-11-13 已适配上游提交 **9124647**（公告版本 2.0.6）：图片改由聊天主模型直接识别，不再有独立识图模型；模型设置集中展示聊天主模型、记忆总结模型、记忆向量模型和变量分析模型；密钥输入框未聚焦时不再留白；默认 API 地址更新。此前 2026-10-28 适配的 2.0.5 特性（自动 Gemini 输入混淆、每次请求重新生成零宽前缀、密钥复制与显示、用量时长显示、聊天导入速度与卡死修复）继续保留。上游 2.0.4 之后的明文云端备份没有接入，本站继续使用用户脚本的加密同步。本定制版仍支持不限数量供应商、Chat Completions、Responses、向量模型和推理强度。升级与验证记录保存在项目私有维护仓库。
+### 站点能力
+- **本地优先**：角色卡、世界书、正则脚本、多用户资料与聊天记录均存于本地浏览器。
+- **多模态与记忆系统**：聊天主模型直读图片；支持基础总结记忆、增强向量召回（相似度 ≥ 48%、最多 10 条）、二次压缩、后台补录及正文记忆引用溯源。
+- **剧情分支与 UI 模板**：支持分支创建、切换、回档、完整导入导出，以及可交互状态面板（清空聊天或切换分支时自动挂载初始模板面板）。
+- **工具调用与兼容模式**：支持关键词检索、Tavily 联网搜索、随机生成、Gemini 抗截断（`output_reply`）及自动 Gemini 输入混淆（`read_user_input`，自动跳过图片数组消息）。
+- **内置创作工具**：角色卡工坊（`/character/`）、小说创作页“墨韵 · 造梦”（`/novel/`）与万相广场一键导入。
 
-仓库分工：本公开 `RP-Hub` 是唯一正式网站代码与 GitHub Pages 发布源；私有 `RP-Hub-Sync` 保存过渡期用户脚本、加密同步数据、补丁规范源与迁移文档；私有 `RP-Hub-Card` 提供独立 LAN 角色卡 API 并保存旧站历史备份；私有且已归档的 `RP-Hub-Legacy` 只供历史回溯，Pages 和旧上游同步工作流已关闭。详见下方仓库分工说明。
+### 相对上游的定制扩展
+- **无限自定义供应商与协议路由**：按「供应商 ID + 模型 ID」独立绑定主聊天、UI 模板、记忆总结与向量模型，支持 `Chat Completions`、`Responses` 和 `OpenAI Embeddings`；支持 OpenCode Go 会话隔离（`x-opencode-session`）。
+- **全本地静态交付**：Vue、marked、DOMPurify、SortableJS、localForage 与预编译 Tailwind CSS 均锁定并提交至 `assets/vendor/`，消除移动端公共 CDN 波动白屏；配备 `assets/js/boot.js` 启动看门狗与本地缓存恢复入口。
+- **隐私与精简**：未接入上游明文云备份，禁用远程在线人数/更新检查心跳（保留上游惰性文件以降低同步冲突）。
 
-**【免责与授权声明】**  
-本项目基于 **[CC BY-NC 4.0（知识共享-署名-非商业性使用 4.0 国际许可协议）](./LICENSE)** 开源。**明确禁止任何形式的商业化使用（包括但不限于：作为收费服务提供、打包在付费产品中售卖、在产品内植入广告盈利等）。** 任何使用者必须遵守该协议，尊重原作者的署名权。对于违反协议的商业行为，保留追究法律责任的权利。
+## 快速开始
 
----
+### 线上使用
 
-## 核心特性 (Features)
+直接打开 [https://rp.blycr.xyz/](https://rp.blycr.xyz/)：
 
-Roleplay Hub 致力于提供流畅、私密且功能强大的本地化AI Roleplay体验。
+1. 打开「设置」→「API 提供商」，配置供应商的 `API URL`、`API Key` 与协议（填基础地址或 `/v1`，勿附带 `/chat/completions`）。
+2. 为主聊天、UI 模板、总结记忆、向量记忆分别绑定供应商与模型（支持搜索或手动输入模型 ID）。
+3. 在「角色管理」导入 PNG / JSON 角色卡或使用角色卡工坊创建角色，返回对话页即可开始。
 
-- 角色卡、世界书、正则脚本和多用户资料管理
-- 总结记忆与向量记忆，可按角色和剧情分支独立保存
-- 正文中的记忆引用可点击查看依据，上下文查看器按内容来源分类统计
-- 剧情分支创建、切换、回档、重命名和完整导入导出
-- UI 模板变量分析与对话状态展示
-- 自动生图、单张重新生成和多套内置画师风格
-- 角色卡生成、万相广场与“墨韵 · 造梦”在线工具
+> 说明：浏览器直连模型接口要求目标 API 允许当前域名 CORS 跨域。
 
-## 本定制版相对上游的改动
+### 本地运行与构建
 
-以下功能已经写入**本仓库的网站代码**，并由 `rp.blycr.xyz` 提供。
-
-| 功能 | 本仓库中的主要文件 |
-| --- | --- |
-| 不限数量的 API 供应商，按“供应商 + 模型 ID”保存聊天、UI 模板、总结记忆和向量记忆模型绑定 | `assets/js/app.js`、`index.html`、`assets/js/ui-components.js` |
-| Chat Completions、Responses 与 Embeddings 路由；在上游 1.9 的原生工具调用中保留工具 ID 和续接结果 | `assets/js/api-utils.js`、`assets/js/app.js`、`assets/js/rphub-api-adapters.js` |
-| 角色卡工坊与小说页使用选定供应商，并通过受限的父子页面消息桥接配置 | `character/index.html`、`novel/index.html`、`assets/js/app.js` |
-| 支持广场官方的一键导入消息桥接；可接收来源标识并保存 `plazaId`，供角色卡生命周期管理使用；关闭不需要的远程版本提醒入口 | `assets/js/app.js`、`index.html` |
-| 网站图标、供应商密钥控件与空间管理 | `favicon.svg`、`assets/js/ui-components.js`、`assets/css/styles.css` |
-
-`RP-Hub-Card` 是另一个局域网资源服务仓库，不在本网站的构建链内。同步用户脚本也不包含在本仓库；更新网站不会自动更新浏览器里已安装的脚本。正式域名经 Cloudflare 提供 HTTPS 和 HTTP 跳转；GitHub Pages 自身的“强制 HTTPS”开关目前因证书未就绪而无法启用，这不影响当前域名的 HTTPS 访问。
-
-设置页中原有“模型请求网关（可选）”和“加密跨设备同步（预览）”两张卡片属于早期页面原生实验。它们与用户脚本的同步和跨域请求职责重叠，现已从页面、加载列表和模板状态中移除。四个过渡期的原生同步模块（`assets/js/rphub-sync-{native,snapshot,crypto,github}.js`）已于 2026-11-13 删除：它们没有任何运行引用，跨设备同步由已安装的用户脚本负责。`gateway/` 仍是独立的可选 Worker 源码，不会被主页面加载，也不代表站点默认转发模型请求或保存同步凭据。完整文件差异与发布边界见仓库内的代码与工作流配置。
-
-### 架构迁移进度
-
-跨设备同步以用户在浏览器里安装的 `rphub-sync.user.js` 为准，远端保存加密快照，站点不需要接收同步凭据。上游 2.0.4 引入的明文云端备份（16 位密钥只是取件码，服务端可读取角色卡和聊天）没有接入正式站。公开站点继续支持可直接跨域访问的供应商；不能跨域的请求仍由用户脚本按既有受控方式处理。`gateway/` 保留为独立 Worker 源码，主页面不再提供设置入口或自动路由。**原有用户脚本仍可使用；迁移现有数据前不要卸载或删除远端快照。**发布边界以仓库内的工作流配置为准。
-
-## 快速开始 (Quick Start)
-
-源码使用 Node.js 22 构建固定的前端依赖；已经发布到 `main` 的站点直接使用仓库内的构建产物，访客无需安装 Node.js。
-
-### 1. 下载与运行
-1. 点击项目主页绿色的 `Code` 按钮，选择 `Download ZIP`。
-2. 将下载的 ZIP 压缩包解压到您的本地任意文件夹中。
-3. 开发或验证时先运行 `npm ci`、`npm run build:static`，再通过静态服务器打开页面。`index.html` 仍需由 HTTP(S) 静态服务器提供；`file://` 直接打开不是受支持的运行方式。
-
-*(注：本地文件的 `null` Origin 不能用于需要精确 CORS 许可的 GitHub 同步或模型网关；本地服务器也不会自动获得生产服务的跨域许可。)*
-
-### 2. 初始化设置
-1. 打开应用后，点击侧边栏（或顶部菜单）的**设置 (Settings)** 选项。
-2. 在 API 供应商设置中添加所需节点，分别配置 `API URL`、`API Key` 与支持的协议；可添加多个供应商。
-3. 为聊天、UI 模板或记忆用途选择供应商与模型，也可手动输入模型 ID；支持推理的模型可设置推理强度。
-4. 在**角色管理**界面，导入您的角色卡文件（或点击新建角色并手动填写设定）。
-5. 回到对话界面，开始属于您的 Roleplay 旅程
-
----
-
-## 记忆、工具与兼容模式
-
-### 记忆系统
-
-- **基础模式**：总结模型为每轮对话生成记忆。超过“保留最近楼层”后，发送上下文时以对应总结替代较早的 AI 正文，不删除原聊天。
-- **增强模式**：与基础模式共用这些总结，再将“用户原输入 + 对应总结”生成向量坐标。按最新输入召回相似度不低于 **48%** 的记忆，最多 **10 条**，按原时间顺序附在最新用户消息后，仅用于本次请求。
-- **二次压缩**：最近 **25 轮**保留逐轮总结，更早的历史按每 **5 个轮次**分组压缩。确认没有正文的空轮可以跳过；有正文但总结失败的轮次需要补齐。压缩后的记忆仍保存原始逐轮总结，增强召回使用的是逐轮总结，而不是整组压缩结果。
-- **补录**：弹窗按需显示逐轮总结、向量坐标、二次压缩的进度与预计时间。增强模式补录需要选好向量模型；更换向量模型后应重新补录坐标。后台补录会等待当前回复结束再继续处理。
-
-“楼层”和“轮次”不是一个单位：普通的一次用户输入加一次 AI 回复通常是两层、一轮。旧版向量模式设置会迁移为增强模式，但旧正文分片不会直接变成新版向量记忆；它们会被空间管理统计为无用残留，由用户确认后清理。
-
-### 工具
-
-- **关键词检索**：查当前对话历史中的原文片段，不是联网搜索。
-- **联网搜索**：调用 Tavily 搜索或读取网页，需要单独填写 Tavily API Key。
-- **随机生成**：模型给出上下限，程序生成包含两端的随机整数；也可提供物品、位置等候选名称，由程序等概率抽取一项。用户指定的范围或选项会沿用，重复名称只计一次。
-
-调用方式有“自适应”和“强制”，模型与 API 均需支持 `tools` / `tool_choice`。检索条数设置不改变增强记忆固定最多 10 条的召回规则。
-
-### Gemini 抗截断
-
-主对话中的 Gemini 抗截断通过 `output_reply` 工具提交正文，不是无限续写或扩大模型输出上限。没有工具正文但有普通正文时，会显示普通正文；只有完全没有正文、思考和工具调用的空响应才自动重试，最多共 **3 次请求**。不支持工具的接口仍可能失败。
-
-角色卡工坊的“兼容模式重试”也使用工具提交内容，而不是切换成非流式请求。
-
-### Gemini 输入混淆
-
-对 Gemini 模型自动启用，不再提供快捷面板开关。最新一条用户消息连同世界书、增强记忆和本轮附加要求会作为成对的 `read_user_input` 工具调用与工具结果传递；每次实际请求前都会重新生成一个隐藏前缀，自动重试也不会复用同一个请求形态。该机制依赖工具调用能力；不兼容工具调用的 Gemini 接口可能无法使用此处理。
-
----
-
-## 目录结构 (Directory Structure)
-
-```text
-Roleplay-Hub/
-├── index.html                     # 主界面与脚本加载入口
-├── character/                     # 角色卡生成工具
-│   └── index.html
-├── novel/                         # 墨韵 · 造梦
-│   └── index.html
-├── assets/
-│   ├── vendor/                    # 构建生成的固定版本前端资源（提交到仓库）
-│   ├── css/
-│   │   ├── styles.css             # 主页面样式
-│   │   ├── tailwind-source.css    # Tailwind 构建入口
-│   │   └── theme.css              # 三个页面共用的主题变量与暗色模式
-│   └── js/
-│       ├── built-in-content.js    # 默认预设、模式提示词、画师串与更新公告
-│       ├── core-utils.js          # 通用工具、角色卡处理与基础配置
-│       ├── api-utils.js           # 上游原生请求客户端，扩展了 Responses 与工具调用路由
-│       ├── data-services.js       # 存储、记忆、上下文、分支与 UI 状态
-│       ├── runtime-services.js    # API 请求、消息渲染与运行状态
-│       ├── update-check.js        # 上游更新检查客户端；本定制版未配置其远程入口
-│       ├── ui-components.js       # 选择器、侧边栏、弹窗与页面组件
-│       ├── rphub-api-adapters.js  # 本定制版的协议适配器
-│       └── app.js                 # 主业务入口、供应商注册表与模型状态
-├── gateway/                      # 独立、可选的受控模型请求 Worker 源码（主页面不加载）
-├── tests/                        # 迁移组件的契约测试
-├── README.en.md                   # 英文说明
-└── README.md                      # 项目说明
-```
-
-### 代码组织说明
-
-页面会按照上方顺序加载 JavaScript 文件，请不要随意调整依赖顺序。
-
-- 修改默认预设、各模式提示词、生图画师串或工具说明时，统一编辑 `built-in-content.js`。
-- 更新公告固定放在 `built-in-content.js` 最底部，方便查找和替换。
-- 可复用界面统一放在 `ui-components.js`，业务数据处理放在 `data-services.js`。
-- 修改依赖、类名或页面后运行 `npm run build:static`；提交 `package-lock.json` 与 `assets/vendor/` 的生成结果。运行 `npm run check:static` 和 `npm test` 后再验证移动端。
-- 页面不得重新引入 Tailwind Play CDN、`unpkg`、`jsDelivr` 运行时依赖或 `document.write` 加载器；启动失败时由 `assets/js/boot.js` 提供重试与清理本站缓存入口。
-
----
-
-## 构建与自动检查
-
-产品站是静态站点，但关键前端依赖已经固定并保存于仓库，避免手机在公共 CDN 波动时白屏。首次检出或升级依赖后运行：
+环境要求：**Node.js >= 22**。
 
 ```bash
+# 1. 安装锁定依赖
 npm ci
+
+# 2. 构建静态资源并执行静态检查与单元测试
 npm run verify
+
+# 3. 启动任意本地静态服务器预览（不支持 file:// 直接打开）
+npx serve .
+# 或：python3 -m http.server 8080
 ```
 
-`npm run verify` 会重新生成 `assets/vendor/` 和 `assets/css/tailwind.css`，检查三个页面没有外部关键 CDN、`document.write` 或不稳定的本地缓存参数，然后运行产品与网关测试。`npm run test:mobile` 使用 Chromium 在 390×844、慢网和 CPU 限速下验证首页、工坊及小说页挂载；本地需要设置 `RPHUB_CHROMIUM_PATH`，GitHub Actions 会自动安装浏览器并执行。已提交构建产物，因此发布不依赖构建机、额外 secret 或手工部署步骤。
-## 协议与许可 (License)
+### 移动端慢网冒烟测试（可选）
 
-本项目严格遵守以下开源协议：
+使用 Playwright Chromium 在 `390×844`、慢网与 4× CPU 限速下验证首页、工坊与小说页挂载：
 
-**[Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)](https://creativecommons.org/licenses/by-nc/4.0/deed.zh-hans)**
+```bash
+npx playwright-core install chromium
+RPHUB_CHROMIUM_PATH=$(find ~/.cache/ms-playwright -path '*/chrome-linux*/chrome' -type f -print -quit) npm run test:mobile
+```
 
-* **您可以**：自由地共享（在任何媒介以任何形式复制、发行本作品）与演绎（修改、转换或以本作品为基础进行创作）。
-* **您必须**：
-  * **署名 (Attribution)**：给出适当的署名，提供指向本许可协议的链接，同时标明是否对原始作品作了修改。
-  * **非商业性使用 (NonCommercial)**：**您不得将本作品或演绎作品用于任何商业目的。** 禁止任何形式的售卖、付费订阅集成或利用本项目进行广告牟利。
-* 若要获取本项目的商业授权，请直接联系项目原作者。
+## 目录结构
 
-详细许可条款请参见根目录下的 [`LICENSE`](./LICENSE) 文件。
+```text
+RP-Hub/
+├── index.html                        # 主对话页面入口
+├── character/index.html              # 角色卡工坊
+├── novel/index.html                  # 墨韵 · 造梦（小说工具）
+├── favicon.svg                       # 站点图标
+├── CNAME                             # GitHub Pages 自定义域名（rp.blycr.xyz）
+├── assets/
+│   ├── vendor/                       # 构建锁定并提交的前端依赖与编译后 tailwind.css
+│   ├── css/
+│   │   ├── styles.css                # 主页面样式
+│   │   ├── tailwind-source.css       # Tailwind 构建输入
+│   │   └── theme.css                 # 三页共享主题变量与暗色模式
+│   └── js/
+│       ├── boot.js                   # 启动看门狗与缓存恢复
+│       ├── tailwind-theme.js         # 主题配置辅助
+│       ├── theme.js                  # 主题持久化与内嵌页同步
+│       ├── built-in-content.js       # 默认预设、提示词、画师串与更新公告
+│       ├── core-utils.js             # 通用工具与角色卡解析
+│       ├── api-utils.js              # 原生请求客户端、工具调用与 Responses/OpenCode 路由
+│       ├── rphub-api-adapters.js     # Chat Completions / Responses / Embeddings 协议适配器
+│       ├── data-services.js          # 存储、记忆、上下文、分支与 UI 模板状态
+│       ├── runtime-services.js       # 消息渲染、用量统计与空间管理
+│       ├── presence.js               # 上游惰性文件（已禁用）
+│       ├── update-check.js           # 上游惰性文件（已禁用）
+│       ├── ui-components.js          # 选择器、侧边栏与弹窗组件
+│       └── app.js                    # 主应用入口、供应商注册表与业务状态
+├── scripts/
+│   ├── build-static.mjs              # 生成 assets/vendor/ 与编译 Tailwind CSS
+│   └── check-static.mjs              # 校验无外部关键 CDN / document.write / 不稳定缓存参数
+├── tests/                            # 契约、兼容性、UI 模板、性能预算与移动端测试
+├── gateway/                          # 独立可选的受控 Cloudflare Worker 源码（主站不加载）
+├── presence-server/                  # 上游可选更新检查服务（主站默认关闭，不参与构建）
+├── tailwind.config.cjs
+├── package.json
+├── CHANGELOG.md
+├── LICENSE                           # CC BY-NC 4.0
+├── README.en.md
+└── README.md
+```
+
+> 页面按 `index.html` 中声明顺序加载 `assets/js/*.js`，请勿随意调整脚本顺序。修改依赖、页面类名或样式后运行 `npm run verify` 并提交生成的 `assets/vendor/` 与 `package-lock.json`。
+
+## 可选独立组件
+
+- **`gateway/`**：独立的受控模型请求 Cloudflare Worker 源码，主页面默认不加载也不自动路由，详见 [`gateway/README.md`](./gateway/README.md)。
+- **`presence-server/`**：上游自带的可选版本检查服务（不存储聊天或密钥），详见 [`presence-server/README.md`](./presence-server/README.md)。
+
+## 许可协议
+
+本项目继承并严格遵守上游开源协议 **[Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)](./LICENSE)**：
+
+- **允许**：以任何媒介或形式共享、复制、修改与基于本项目演绎创作。
+- **必须遵守**：
+  - **署名（Attribution）**：保留原作者署名与本协议链接，并说明修改之处。
+  - **非商业性使用（NonCommercial）**：**严禁任何形式的商业化使用**（包括付费服务、商业打包售卖或广告盈利）。
+- 如需商业授权，请直接联系上游原作者。
