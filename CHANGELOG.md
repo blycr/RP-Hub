@@ -6,6 +6,17 @@
 
 ---
 
+## [2.0.6-custom.9] - 2026-11-28
+
+### 概述（Overview）
+修复角色卡生成页面（工坊 `character/index.html`）无法同步显示和切换主界面已配置模型（含 3 个主模型槽位与直选当前主模型）的问题，并补齐生图模型与自定义画师串同步。
+
+### 修复（Fixed）
+- 修复主站 `syncSettingsToGenerator` 发送 `SYNC_SETTINGS` 时遗漏 `qualityModel`、`balancedModel`、`fastModel`、`imageModel` 与 `customImageArtists` 字段的问题。
+- 修复工坊页仅从顶层字段读取下拉模型名称且未支持 `current` 当前主模型的问题：现优先从 `presets.{quality,balanced,fast}` 与 `currentModel` 同步所有已配置模型及供应商名称，顶部栏直接显示当前激活模型，下拉列表支持在直选主模型与 3 个预设槽位间自由切换。
+
+---
+
 ## [2.0.6-custom.8] - 2026-11-28
 
 ### 概述（Overview）

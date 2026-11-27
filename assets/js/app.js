@@ -1212,17 +1212,29 @@ const app = createApp({
             const iframe = getWorkshopFrame();
             if (!iframe || !iframe.contentWindow) return;
             try {
+                const currentModel = buildWorkshopModelBinding('model', 'modelProviderId');
+                const quality = buildWorkshopModelBinding('qualityModel', 'qualityModelProviderId');
+                const balanced = buildWorkshopModelBinding('balancedModel', 'balancedModelProviderId');
+                const fast = buildWorkshopModelBinding('fastModel', 'fastModelProviderId');
+                const customImageArtists = settings.customImageArtists && typeof settings.customImageArtists === 'object'
+                    ? JSON.parse(JSON.stringify(settings.customImageArtists))
+                    : {};
                 const syncData = {
                     type: 'SYNC_SETTINGS',
                     version: 2,
                     settings: {
                         imageGenKey: settings.imageGenKey,
+                        imageModel: settings.imageModel,
                         imageStyle: settings.imageStyle,
-                        currentModel: buildWorkshopModelBinding('model', 'modelProviderId'),
+                        customImageArtists,
+                        qualityModel: quality.model,
+                        balancedModel: balanced.model,
+                        fastModel: fast.model,
+                        currentModel,
                         presets: {
-                            quality: buildWorkshopModelBinding('qualityModel', 'qualityModelProviderId'),
-                            balanced: buildWorkshopModelBinding('balancedModel', 'balancedModelProviderId'),
-                            fast: buildWorkshopModelBinding('fastModel', 'fastModelProviderId'),
+                            quality,
+                            balanced,
+                            fast,
                         },
                     },
                 };

@@ -365,7 +365,7 @@
                             class="relative bg-base-200/50 hover:bg-base-200 py-1 px-4 rounded-xl flex items-center justify-between w-full h-[2.35rem] border border-base-200/60 backdrop-blur-md shadow-inner transition-colors list-none cursor-pointer focus:outline-none">
                             <span
                                 class="text-xs md:text-sm font-mono font-semibold truncate text-base-content w-full text-left">{{
-                                options.customModels[activeModelType] || '未设置模型' }}</span>
+                                api.model || options.customModels[activeModelType] || '未设置模型' }}</span>
                             <svg class="w-4 h-4 ml-2 opacity-50 shrink-0" fill="none" stroke="currentColor"
                                 viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -375,27 +375,40 @@
 
                         <ul
                             class="dropdown-content z-[100] menu p-2 shadow-xl bg-base-100 rounded-2xl w-full md:w-96 mt-2 border border-base-200/50">
+                            <li v-if="showCurrentModelOption">
+                                <a onclick="this.closest('details').removeAttribute('open')"
+                                    @click="setActiveModel('current')"
+                                    :class="{'bg-base-200/80 font-bold': activeModelType === 'current'}"
+                                    class="py-3 px-4 flex items-center justify-between gap-2">
+                                    <span class="font-mono text-xs truncate flex-1">{{ options.customModels.current }}</span>
+                                    <span class="text-[11px] opacity-60 shrink-0">{{ api.modelConfigs.current?.providerName || '当前主模型' }}</span>
+                                </a>
+                            </li>
                             <li>
                                 <a onclick="this.closest('details').removeAttribute('open')"
                                     @click="setActiveModel('quality')"
                                     :class="{'bg-base-200/80 font-bold': activeModelType === 'quality'}"
-                                    class="py-3 px-4">
-                                    <span class="font-mono text-xs w-full truncate">{{ options.customModels.quality || '未设置' }}</span>
+                                    class="py-3 px-4 flex items-center justify-between gap-2">
+                                    <span class="font-mono text-xs truncate flex-1">{{ options.customModels.quality || '未设置' }}</span>
+                                    <span v-if="api.modelConfigs.quality?.providerName" class="text-[11px] opacity-60 shrink-0">{{ api.modelConfigs.quality.providerName }}</span>
                                 </a>
                             </li>
                             <li>
                                 <a onclick="this.closest('details').removeAttribute('open')"
                                     @click="setActiveModel('balanced')"
                                     :class="{'bg-base-200/80 font-bold': activeModelType === 'balanced'}"
-                                    class="py-3 px-4">
-                                    <span class="font-mono text-xs w-full truncate">{{ options.customModels.balanced || '未设置' }}</span>
+                                    class="py-3 px-4 flex items-center justify-between gap-2">
+                                    <span class="font-mono text-xs truncate flex-1">{{ options.customModels.balanced || '未设置' }}</span>
+                                    <span v-if="api.modelConfigs.balanced?.providerName" class="text-[11px] opacity-60 shrink-0">{{ api.modelConfigs.balanced.providerName }}</span>
                                 </a>
                             </li>
                             <li>
                                 <a onclick="this.closest('details').removeAttribute('open')"
                                     @click="setActiveModel('fast')"
-                                    :class="{'bg-base-200/80 font-bold': activeModelType === 'fast'}" class="py-3 px-4">
-                                    <span class="font-mono text-xs w-full truncate">{{ options.customModels.fast || '未设置' }}</span>
+                                    :class="{'bg-base-200/80 font-bold': activeModelType === 'fast'}"
+                                    class="py-3 px-4 flex items-center justify-between gap-2">
+                                    <span class="font-mono text-xs truncate flex-1">{{ options.customModels.fast || '未设置' }}</span>
+                                    <span v-if="api.modelConfigs.fast?.providerName" class="text-[11px] opacity-60 shrink-0">{{ api.modelConfigs.fast.providerName }}</span>
                                 </a>
                             </li>
                         </ul>
@@ -1705,13 +1718,19 @@ You are carrying out a fictional character card creation and editing task. Act a
                     const current = mainSettings?.currentModel || {};
                     const selectedModel = String(current.model || '').trim();
                     const selectedProviderId = String(current.providerId || '').trim();
-                    if (!selectedModel) return 'current';
-                    for (const type of ['fast', 'balanced', 'quality']) {
-                        const preset = mainSettings?.presets?.[type] || {};
-                        if (selectedModel === String(preset.model || '').trim()
-                            && selectedProviderId === String(preset.providerId || '').trim()) {
-                            return type;
+                    if (selectedModel) {
+                        for (const type of ['quality', 'balanced', 'fast']) {
+                            const preset = mainSettings?.presets?.[type] || {};
+                            if (selectedModel === String(preset.model || '').trim()
+                                && selectedProviderId === String(preset.providerId || '').trim()) {
+                                return type;
+                            }
                         }
+                        return 'current';
+                    }
+                    for (const type of ['quality', 'balanced', 'fast']) {
+                        const preset = mainSettings?.presets?.[type] || {};
+                        if (String(preset.model || '').trim()) return type;
                     }
                     return 'current';
                 };
@@ -1757,10 +1776,11 @@ You are carrying out a fictional character card creation and editing task. Act a
                                 mainSettings.customImageArtists
                             );
 
-                            // Sync Models
-                            options.customModels.quality = mainSettings.qualityModel || '';
-                            options.customModels.balanced = mainSettings.balancedModel || '';
-                            options.customModels.fast = mainSettings.fastModel || '';
+                            // Sync Models (兼容 presets 对象与顶层模型字段，并保留主界面直选的 current 模型)
+                            options.customModels.current = api.modelConfigs.current.model || '';
+                            options.customModels.quality = api.modelConfigs.quality.model || mainSettings.qualityModel || '';
+                            options.customModels.balanced = api.modelConfigs.balanced.model || mainSettings.balancedModel || '';
+                            options.customModels.fast = api.modelConfigs.fast.model || mainSettings.fastModel || '';
                             const syncedModelType = getActiveModelTypeFromMainSettings(mainSettings);
                             if (syncedModelType) activeModelType.value = syncedModelType;
 
@@ -1780,6 +1800,7 @@ You are carrying out a fictional character card creation and editing task. Act a
                     imageModel: 'nai-diffusion-4-5-full',
                     imageArtists: cardUtils.getImageStyleArtists('vertical'),
                     customModels: {
+                        current: '',
                         quality: '',
                         balanced: '',
                         fast: ''
@@ -1796,6 +1817,17 @@ You are carrying out a fictional character card creation and editing task. Act a
                     chatProtocol: 'openai-chat-completions',
                     modelConfigs: {},
                     stream: true
+                });
+
+                const showCurrentModelOption = computed(() => {
+                    const current = api.modelConfigs?.current || {};
+                    const currentModel = String(current.model || options.customModels.current || '').trim();
+                    if (!currentModel) return false;
+                    return !['quality', 'balanced', 'fast'].some((slot) => {
+                        const preset = api.modelConfigs?.[slot] || {};
+                        return String(preset.model || '').trim() === currentModel
+                            && String(preset.providerId || '').trim() === String(current.providerId || '').trim();
+                    });
                 });
 
                 // Call sync setup only after options and api are initialized to avoid TDZ errors on fast SYNC_SETTINGS.
@@ -3577,6 +3609,7 @@ JSON 字段（世界书/正则脚本）必须输出为合法的 JSON 数组，**
                     prompt,
                     api,
                     options,
+                    showCurrentModelOption,
                     activeModelType,
                     setActiveModel,
                     characters,
