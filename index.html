@@ -710,17 +710,136 @@
                                 </button>
                             </div>
                         </div>
-                        <div v-if="settings.showLatestUsageBar && latestMainTokenUsage"
-                            class="island-usage grid text-xs text-gray-500 md:text-[13px]"
-                            style="grid-template-columns: repeat(3, minmax(0, 1fr));">
-                            <span v-for="part in [
-                                    { tone: 'input', label: '输入', value: getUncachedInputTokens(latestMainTokenUsage) },
-                                    { tone: 'cache', label: '缓存', value: latestMainTokenUsage.cacheReadTokens },
-                                    { tone: 'output', label: '输出', value: latestMainTokenUsage.outputTokens }]" :key="part.tone"
-                                class="flex min-w-0 items-center justify-center gap-1 whitespace-nowrap px-1" :title="part.label + ' Token'">
-                                <i :class="'usage-swatch usage-tone--' + part.tone"></i>
-                                <rolling-text class="font-mono font-semibold tabular-nums text-gray-700" :value="formatLatestTokenCount(part.value)"></rolling-text>
-                            </span>
+                        <div v-if="(settings.showLatestUsageBar && latestMainTokenUsage) || (currentCharacter && liveContextBudget.totalTokens > 0)"
+                            class="context-budget-panel-container relative">
+                            <div class="island-usage flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs text-gray-500 md:text-[13px]">
+                                <div v-if="settings.showLatestUsageBar && latestMainTokenUsage"
+                                    class="flex flex-1 min-w-0 items-center justify-around gap-1">
+                                    <span v-for="part in [
+                                            { tone: 'input', label: '输入', value: getUncachedInputTokens(latestMainTokenUsage) },
+                                            { tone: 'cache', label: '缓存', value: latestMainTokenUsage.cacheReadTokens },
+                                            { tone: 'output', label: '输出', value: latestMainTokenUsage.outputTokens }]" :key="part.tone"
+                                        class="flex min-w-0 items-center justify-center gap-1 whitespace-nowrap px-1" :title="part.label + ' Token'">
+                                        <i :class="'usage-swatch usage-tone--' + part.tone"></i>
+                                        <rolling-text class="font-mono font-semibold tabular-nums text-gray-700" :value="formatLatestTokenCount(part.value)"></rolling-text>
+                                    </span>
+                                </div>
+                                <button v-if="currentCharacter && liveContextBudget.totalTokens > 0"
+                                    type="button" @click.stop="toggleContextBudgetPanel"
+                                    :title="'点击查看分层占比与调整当前模型上下文甜点线（' + (liveContextBudget.calibrated ? '已按 API 实测校准 ×' + liveContextBudget.calibrationSamples : '初始估算，首次请求后自动校准') + '）'"
+                                    :class="['flex items-center gap-1.5 rounded-full px-2 py-0.5 font-mono text-[11px] font-semibold tabular-nums transition-colors whitespace-nowrap',
+                                        settings.showLatestUsageBar && latestMainTokenUsage ? 'ml-auto' : 'mx-auto',
+                                        liveContextBudget.level === 'danger'
+                                            ? 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
+                                            : liveContextBudget.level === 'sweetspot'
+                                                ? 'bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100'
+                                                : 'bg-gray-100/80 text-gray-600 border border-gray-200/70 hover:bg-gray-200/70']">
+                                    <span :class="['inline-block h-2 w-2 rounded-full flex-none',
+                                        liveContextBudget.level === 'danger' ? 'bg-red-500'
+                                            : liveContextBudget.level === 'sweetspot' ? 'bg-amber-500'
+                                                : 'bg-emerald-500']"></span>
+                                    <span>{{ formatContextTokenCount(liveContextBudget.totalTokens) }} / {{ formatContextTokenCount(liveContextBudget.budget.sweetSpotTokens) }}</span>
+                                    <span class="opacity-60">· {{ formatContextTokenCount(liveContextBudget.budget.hardLimit) }}</span>
+                                </button>
+                            </div>
+                            <transition enter-active-class="transition duration-200 ease-out"
+                                enter-from-class="opacity-0 translate-y-2 scale-95"
+                                enter-to-class="opacity-100 translate-y-0 scale-100"
+                                leave-active-class="transition duration-150 ease-in"
+                                leave-from-class="opacity-100 translate-y-0 scale-100"
+                                leave-to-class="opacity-0 translate-y-2 scale-95">
+                                <div v-if="showContextBudgetPanel" @click.stop
+                                    role="dialog" aria-label="上下文占用与模型甜点线"
+                                    class="absolute bottom-[calc(100%+0.6rem)] left-1/2 z-50 w-[min(23rem,calc(100vw-1.5rem))] -translate-x-1/2 max-h-[calc(100dvh-11rem)] overflow-y-auto overscroll-contain rounded-2xl border border-gray-200 bg-white/95 p-3.5 shadow-xl backdrop-blur-xl text-xs text-gray-700">
+                                    <div class="flex items-start justify-between gap-2 pb-2 border-b border-gray-100">
+                                        <div class="min-w-0">
+                                            <div class="font-bold text-sm text-gray-800 truncate">{{ settings.model || '当前模型' }}</div>
+                                            <div class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-gray-500">
+                                                <span class="rounded bg-gray-100 px-1.5 py-0.5">{{ getHardLimitSourceLabel(liveContextBudget.budget.hardLimitSource) }}</span>
+                                                <span class="rounded px-1.5 py-0.5"
+                                                    :class="liveContextBudget.calibrated ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'">
+                                                    {{ liveContextBudget.calibrated ? ('API 实测校准 ×' + liveContextBudget.calibrationSamples) : '未校准（首轮后自动校准）' }}
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <button type="button" @click="showContextBudgetPanel = false" aria-label="关闭上下文面板"
+                                            class="w-6 h-6 flex items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600">
+                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-width="2" d="m6 6 12 12M18 6 6 18"></path>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                    <div class="mt-2.5 space-y-1.5">
+                                        <div class="flex items-center justify-between font-mono text-[11px]">
+                                            <span>预计输入 <strong>{{ formatContextTokenCount(liveContextBudget.totalTokens) }}</strong></span>
+                                            <span>甜点 {{ formatContextTokenCount(liveContextBudget.budget.sweetSpotTokens) }} / 上限 {{ formatContextTokenCount(liveContextBudget.budget.hardLimit) }}</span>
+                                        </div>
+                                        <div class="relative h-2 w-full overflow-hidden rounded-full bg-gray-100">
+                                            <div class="h-full rounded-full transition-all"
+                                                :class="liveContextBudget.level === 'danger' ? 'bg-red-500' : liveContextBudget.level === 'sweetspot' ? 'bg-amber-500' : 'bg-emerald-500'"
+                                                :style="{ width: Math.min(100, liveContextBudget.hardLimitPercent) + '%' }"></div>
+                                            <div class="absolute top-0 bottom-0 w-0.5 bg-amber-600/80"
+                                                :style="{ left: Math.min(98, Math.round(liveContextBudget.budget.sweetSpotRatio * 100)) + '%' }"
+                                                title="质量甜点线"></div>
+                                        </div>
+                                        <div class="text-[11px]"
+                                            :class="liveContextBudget.level === 'danger' ? 'text-red-600 font-semibold' : liveContextBudget.level === 'sweetspot' ? 'text-amber-700 font-semibold' : 'text-emerald-700'">
+                                            {{ liveContextBudget.level === 'danger'
+                                                ? '已逼近安全红线：建议立即开启记忆总结或精简历史，避免接口超限报错'
+                                                : liveContextBudget.level === 'sweetspot'
+                                                    ? '已超质量甜点线：长文精度可能开始衰减，建议开启记忆系统或适当调低保留楼层'
+                                                    : '处于质量甜点区内：保留完整原文，无需强行压缩' }}
+                                        </div>
+                                    </div>
+                                    <div class="mt-3 space-y-1.5 border-t border-gray-100 pt-2.5">
+                                        <div class="text-[11px] font-semibold text-gray-500">分层 Token 占比</div>
+                                        <div v-for="sec in liveContextBudget.sections" :key="sec.key" class="flex items-center gap-2 text-[11px]">
+                                            <span class="inline-block h-2 w-2 rounded-full flex-none" :style="{ backgroundColor: sec.color }"></span>
+                                            <span class="w-20 flex-none text-gray-600">{{ sec.label }}</span>
+                                            <div class="flex-1 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+                                                <div class="h-full rounded-full" :style="{ width: sec.percent + '%', backgroundColor: sec.color }"></div>
+                                            </div>
+                                            <span class="w-16 flex-none text-right font-mono tabular-nums text-gray-700">{{ formatContextTokenCount(sec.tokens) }}</span>
+                                        </div>
+                                    </div>
+                                    <div class="mt-3 space-y-2 border-t border-gray-100 pt-2.5">
+                                        <div class="flex items-center justify-between">
+                                            <span class="text-[11px] font-semibold text-gray-500">当前模型硬上限</span>
+                                            <button type="button" @click="resetCurrentModelContextBudget"
+                                                class="text-[11px] text-primary-600 hover:underline">恢复默认</button>
+                                        </div>
+                                        <div class="flex flex-wrap gap-1">
+                                            <button v-for="preset in MODEL_CONTEXT_LIMIT_PRESETS" :key="preset" type="button"
+                                                @click="setCurrentModelHardLimit(preset)"
+                                                :class="['rounded-lg border px-2 py-0.5 font-mono text-[11px] transition-colors',
+                                                    liveContextBudget.budget.hardLimit === preset
+                                                        ? 'border-primary-500 bg-primary-50 text-primary-700 font-semibold'
+                                                        : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100']">
+                                                {{ formatContextTokenCount(preset) }}
+                                            </button>
+                                        </div>
+                                        <div class="text-[11px] font-semibold text-gray-500">质量甜点比例</div>
+                                        <div class="flex flex-wrap gap-1">
+                                            <button v-for="ratio in MODEL_SWEET_SPOT_RATIO_PRESETS" :key="ratio" type="button"
+                                                @click="setCurrentModelSweetSpotRatio(ratio)"
+                                                :class="['rounded-lg border px-2 py-0.5 font-mono text-[11px] transition-colors',
+                                                    Math.abs(liveContextBudget.budget.sweetSpotRatio - ratio) < 0.02
+                                                        ? 'border-amber-500 bg-amber-50 text-amber-800 font-semibold'
+                                                        : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100']">
+                                                {{ Math.round(ratio * 100) }}%
+                                            </button>
+                                        </div>
+                                        <div class="grid grid-cols-[1fr_1fr_auto] items-center gap-1.5 pt-1">
+                                            <input v-model="customHardLimitInput" type="text" placeholder="上限 如 1M"
+                                                class="min-w-0 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 font-mono text-[11px] text-gray-700 focus:border-primary-400 focus:bg-white focus:outline-none">
+                                            <input v-model="customSweetSpotInput" type="text" placeholder="甜点 如 300k"
+                                                class="min-w-0 rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 font-mono text-[11px] text-gray-700 focus:border-primary-400 focus:bg-white focus:outline-none">
+                                            <button type="button" @click="applyCustomModelBudgetInputs"
+                                                class="rounded-lg bg-primary-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-primary-700">应用</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </transition>
                         </div>
                         <!-- Quick panel anchors to the whole composer so it never covers the text -->
                         <transition enter-active-class="transition duration-300 ease-spring"

@@ -72,17 +72,26 @@ const {
     trimMemoryText
 } = window.RPHubMemoryUtils;
 const {
+    MODEL_CONTEXT_LIMIT_PRESETS,
+    MODEL_SWEET_SPOT_RATIO_PRESETS,
     appendEnhancedMemoryRecall,
     buildContextViewerState,
     buildConversationTurnSnapshot: createConversationTurnSnapshot,
+    buildModelBudgetKey,
     escapeXmlAttribute,
+    estimateMessagesBaseTokens,
+    estimateTextBaseTokens,
+    formatContextTokenCount,
     getConversationTurnAtIndexFromSnapshot,
     getPostprocessedChatMessages: postprocessChatHistory,
     indentXmlText,
     injectContextMessages,
     isRoleMemoryContextContent,
     postprocessContextMessages,
-    resolveWorldInfoEntries
+    resolveModelContextBudget,
+    resolveWorldInfoEntries,
+    summarizeContextBudget,
+    updateTokenCalibration
 } = window.RPHubContextUtils;
 const {
     STORY_BRANCH_CHAT_EXPORT_TYPE,
@@ -622,6 +631,8 @@ const app = createApp({
             customApiUrl: '',
             model: DEFAULT_API_CONFIG.qualityModel,
             contextSize: MAX_CONTEXT_SIZE,
+            modelContextBudgets: {},
+            modelTokenCalibrations: {},
             temperature: 1.0,
             reasoningEffort: '',
             stream: true,
@@ -746,6 +757,17 @@ const app = createApp({
                 if (validIds.has(providerId)) validModes[providerId] = normalizeProviderMode(mode);
             });
             settings.apiProviderModes = validModes;
+            const pruneModelScopedMap = (mapObj) => {
+                const next = {};
+                Object.entries(mapObj && typeof mapObj === 'object' ? mapObj : {}).forEach(([key, value]) => {
+                    const sep = key.indexOf('::');
+                    const pid = sep >= 0 ? key.slice(0, sep) : '';
+                    if (!pid || validIds.has(pid)) next[key] = value;
+                });
+                return next;
+            };
+            settings.modelContextBudgets = pruneModelScopedMap(settings.modelContextBudgets);
+            settings.modelTokenCalibrations = pruneModelScopedMap(settings.modelTokenCalibrations);
             availableModels.value = availableModels.value.filter(model => validIds.has(model.providerId));
         };
 
@@ -1955,6 +1977,225 @@ const app = createApp({
             saveStoredValue: setStoredValue,
             toast: (...args) => showToast(...args)
         });
+        const showContextBudgetPanel = ref(false);
+        const customHardLimitInput = ref('');
+        const customSweetSpotInput = ref('');
+
+        const calibrateModelTokenEstimator = (providerId, modelId, estimatedBaseTokens, actualInputTokens) => {
+            const key = buildModelBudgetKey(providerId, modelId);
+            if (!modelId || !Number.isFinite(actualInputTokens) || actualInputTokens <= 0) return;
+            const currentMap = settings.modelTokenCalibrations && typeof settings.modelTokenCalibrations === 'object'
+                ? settings.modelTokenCalibrations
+                : {};
+            const updated = updateTokenCalibration(currentMap[key], { estimatedBaseTokens, actualInputTokens });
+            if (!updated) return;
+            settings.modelTokenCalibrations = {
+                ...currentMap,
+                [key]: updated
+            };
+            saveData({ saveMemories: false, saveCharacters: false });
+        };
+
+        const parseContextTokenInput = (raw) => {
+            const text = String(raw || '').trim().toLowerCase().replace(/,/g, '');
+            if (!text) return null;
+            const match = text.match(/^(\d+(?:\.\d+)?)\s*(k|w|万|m)?$/i);
+            if (!match) return null;
+            const num = Number(match[1]);
+            if (!Number.isFinite(num) || num <= 0) return null;
+            const unit = match[2] || '';
+            const mult = unit === 'm' ? 1000000 : (unit === 'w' || unit === '万') ? 10000 : unit === 'k' ? 1000 : 1;
+            const value = Math.round(num * mult);
+            return value >= 4096 && value <= 10000000 ? value : null;
+        };
+
+        const currentChatProviderId = computed(() => settings.modelProviderId || settings.apiProviderId || '');
+        const currentChatModelMeta = computed(() => {
+            const modelId = String(settings.model || '').trim();
+            if (!modelId) return null;
+            const pid = currentChatProviderId.value;
+            return availableModels.value.find(m => m && m.id === modelId && m.providerId === pid)
+                || availableModels.value.find(m => m && m.id === modelId)
+                || null;
+        });
+        const currentModelContextBudget = computed(() => resolveModelContextBudget({
+            providerId: currentChatProviderId.value,
+            modelId: settings.model,
+            modelMeta: currentChatModelMeta.value,
+            overrides: settings.modelContextBudgets
+        }));
+        const currentModelTokenCalibration = computed(() => {
+            const key = buildModelBudgetKey(currentChatProviderId.value, settings.model);
+            return settings.modelTokenCalibrations?.[key] || null;
+        });
+
+        const liveContextBudget = computed(() => {
+            const char = currentCharacter.value;
+            if (!char) {
+                return summarizeContextBudget({
+                    sections: {},
+                    budget: currentModelContextBudget.value,
+                    calibration: currentModelTokenCalibration.value
+                });
+            }
+            const enabledPresetsText = (presets.value || [])
+                .map(normalizePreset)
+                .filter(p => isPresetEnabled(p) && p.content.trim())
+                .map(p => p.content)
+                .join('\n\n');
+            const charText = [
+                getCurrentCharacterPrompt(),
+                String(char.mes_example || ''),
+                buildUserInfoPrompt(),
+                enabledPresetsText
+            ].filter(Boolean).join('\n\n');
+
+            let worldInfoBaseTokens = 0;
+            if (lastContextMessages.value.length > 0) {
+                const wiChars = lastContextMessages.value.reduce((sum, msg) => sum + (Number(msg?.worldInfoChars) || 0), 0);
+                worldInfoBaseTokens = Math.ceil(wiChars * 0.62);
+            } else {
+                const constantWiText = (worldInfo.value || [])
+                    .filter(entry => entry && entry.enabled !== false && entry.constant)
+                    .map(entry => String(entry.content || ''))
+                    .join('\n\n');
+                worldInfoBaseTokens = estimateTextBaseTokens(constantWiText);
+            }
+
+            let uiTemplatesText = '';
+            if (settings.uiTemplateEnabled && activeUiTemplates.value.length > 0) {
+                uiTemplatesText = JSON.stringify(activeUiTemplates.value.map(template => ({
+                    id: template.id,
+                    name: template.name || 'UI模板',
+                    currentVariables: template.variableState || {},
+                    variableSchema: template.variableSchema || ''
+                })));
+            }
+
+            const postprocessed = postprocessChatHistory(chatHistory.value, { includeSystem: false });
+            let memoriesBaseTokens = 0;
+            let recentChatBaseTokens = 0;
+            const memoryActive = memorySettings.enabled && classicMemories.value.length > 0;
+            const keepFloors = Math.max(SUMMARY_KEEP_FLOORS_MIN, Number(memorySettings.summaryKeepFloors) || SUMMARY_KEEP_FLOORS_DEFAULT);
+            const rawStartIndex = memoryActive ? Math.max(0, postprocessed.length - keepFloors) : 0;
+
+            if (memoryActive && rawStartIndex > 0) {
+                const memText = flattenClassicMemories(classicMemories.value)
+                    .map(m => String(m?.summary || ''))
+                    .join('\n');
+                memoriesBaseTokens = estimateTextBaseTokens(memText);
+            }
+
+            let retainedValidUiBlockSeen = false;
+            let retainedCotCount = 0;
+            for (let i = postprocessed.length - 1; i >= rawStartIndex; i--) {
+                const msg = postprocessed[i];
+                if (!msg) continue;
+                const parsed = parseCot(msg.content || '');
+                let text = parsed.main || '';
+                const hasUpdateBlock = settings.uiTemplateEnabled
+                    && settings.uiTemplateMainModelAnalysis
+                    && msg.role === 'assistant'
+                    && !msg.uiTemplateAnalysisFailure
+                    && findUiTemplateUpdateBlock(text);
+                if (hasUpdateBlock && !retainedValidUiBlockSeen) {
+                    retainedValidUiBlockSeen = true;
+                } else {
+                    text = stripUiTemplateUpdateBlock(text);
+                }
+                let cotExtra = 0;
+                if (msg.role === 'assistant' && retainedCotCount < 2 && (parsed.rawCot || msg.reasoning)) {
+                    retainedCotCount++;
+                    cotExtra = estimateTextBaseTokens(parsed.rawCot || msg.reasoning);
+                }
+                recentChatBaseTokens += 6 + estimateTextBaseTokens(text) + cotExtra;
+            }
+            if (userInput.value) {
+                recentChatBaseTokens += estimateTextBaseTokens(userInput.value);
+            }
+
+            return summarizeContextBudget({
+                sections: {
+                    system: estimateTextBaseTokens(charText),
+                    worldInfo: worldInfoBaseTokens,
+                    uiTemplates: estimateTextBaseTokens(uiTemplatesText),
+                    memories: memoriesBaseTokens,
+                    recentChat: recentChatBaseTokens
+                },
+                budget: currentModelContextBudget.value,
+                calibration: currentModelTokenCalibration.value
+            });
+        });
+
+        const getHardLimitSourceLabel = (source) => ({
+            manual: '手动设置',
+            metadata: '接口元数据',
+            family: '模型默认',
+            default: '默认估算'
+        }[source] || '默认估算');
+
+        const toggleContextBudgetPanel = () => {
+            showContextBudgetPanel.value = !showContextBudgetPanel.value;
+            if (showContextBudgetPanel.value) {
+                showChatModelSelector.value = false;
+                customHardLimitInput.value = formatContextTokenCount(currentModelContextBudget.value.hardLimit);
+                customSweetSpotInput.value = formatContextTokenCount(currentModelContextBudget.value.sweetSpotTokens);
+            }
+        };
+
+        const updateCurrentModelContextBudget = (patch = {}) => {
+            const key = currentModelContextBudget.value.key;
+            if (!settings.model) return;
+            const currentMap = settings.modelContextBudgets && typeof settings.modelContextBudgets === 'object'
+                ? settings.modelContextBudgets
+                : {};
+            const prev = currentMap[key] && typeof currentMap[key] === 'object' ? { ...currentMap[key] } : {};
+            const next = { ...prev, ...patch };
+            settings.modelContextBudgets = { ...currentMap, [key]: next };
+            saveData({ saveMemories: false, saveCharacters: false });
+            customHardLimitInput.value = formatContextTokenCount(currentModelContextBudget.value.hardLimit);
+            customSweetSpotInput.value = formatContextTokenCount(currentModelContextBudget.value.sweetSpotTokens);
+        };
+
+        const setCurrentModelHardLimit = (limitTokens) => {
+            updateCurrentModelContextBudget({ hardLimit: limitTokens, sweetSpotTokens: undefined });
+        };
+
+        const setCurrentModelSweetSpotRatio = (ratio) => {
+            updateCurrentModelContextBudget({ sweetSpotRatio: ratio, sweetSpotTokens: undefined });
+        };
+
+        const applyCustomModelBudgetInputs = () => {
+            const hard = parseContextTokenInput(customHardLimitInput.value);
+            const sweet = parseContextTokenInput(customSweetSpotInput.value);
+            if (!hard) {
+                showToast('上限格式无效，可输入如 1M、500k、256k', 'error');
+                return;
+            }
+            if (sweet && sweet >= hard) {
+                showToast('甜点线必须小于硬上限', 'error');
+                return;
+            }
+            updateCurrentModelContextBudget({
+                hardLimit: hard,
+                sweetSpotTokens: sweet || undefined,
+                sweetSpotRatio: sweet ? undefined : currentModelContextBudget.value.sweetSpotRatio
+            });
+            showToast(`已更新 ${settings.model} 上下文配置`, 'success');
+        };
+
+        const resetCurrentModelContextBudget = () => {
+            const key = currentModelContextBudget.value.key;
+            if (!settings.modelContextBudgets || !settings.modelContextBudgets[key]) return;
+            const next = { ...settings.modelContextBudgets };
+            delete next[key];
+            settings.modelContextBudgets = next;
+            saveData({ saveMemories: false, saveCharacters: false });
+            customHardLimitInput.value = formatContextTokenCount(currentModelContextBudget.value.hardLimit);
+            customSweetSpotInput.value = formatContextTokenCount(currentModelContextBudget.value.sweetSpotTokens);
+            showToast('已恢复模型默认上下文配置', 'info');
+        };
+
         // RP-Hub-Sync upstream 1.9 provider routing
         const requestTrackedChatCompletion = (options, type) => {
             const providerId = options.providerId || (type === 'summary'
@@ -1963,6 +2204,7 @@ const app = createApp({
                     : settings.modelProviderId) || settings.apiProviderId;
             const config = getProviderApiConfig(providerId);
             const { providerId: _providerId, ...requestOptions } = options;
+            const estimatedBaseTokens = type === 'chat' ? estimateMessagesBaseTokens(requestOptions.messages) : 0;
             const request = {
                 ...requestOptions,
                 url: buildApiEndpoint(config.apiUrl, config.chatProtocol === CHAT_PROTOCOL_OPENAI_RESPONSES
@@ -1971,9 +2213,17 @@ const app = createApp({
                 protocol: config.chatProtocol,
                 sessionId: requestOptions.sessionId || getCurrentStoryBranchScopeId(),
             };
-            return requestChatCompletion({ ...request, onUsage: (usage, metrics) => recordApiUsage(usage, {
-                type, model: request.model, apiUrl: config.apiUrl, apiKey: config.apiKey, ...metrics
-            }) });
+            return requestChatCompletion({ ...request, onUsage: (usage, metrics) => {
+                recordApiUsage(usage, {
+                    type, model: request.model, apiUrl: config.apiUrl, apiKey: config.apiKey, ...metrics
+                });
+                if (type === 'chat' && estimatedBaseTokens > 0) {
+                    const normalized = normalizeApiUsage(usage);
+                    if (normalized.inputTokens > 0) {
+                        calibrateModelTokenEstimator(providerId, request.model, estimatedBaseTokens, normalized.inputTokens);
+                    }
+                }
+            } });
         };
         const {
             cleanupUnusedStorage,
@@ -8909,6 +9159,9 @@ const app = createApp({
 
             // --- 全局点击外部区域收起面板 ---
             document.addEventListener('click', (e) => {
+                if (showContextBudgetPanel.value && !e.target.closest('.context-budget-panel-container')) {
+                    showContextBudgetPanel.value = false;
+                }
                 if (settingsHelpTopic.value
                     && !e.target.closest('.settings-help-trigger')
                     && !e.target.closest('.settings-help-popover')) {
@@ -9149,7 +9402,7 @@ const app = createApp({
         return {
             switchProfile, createNewProfile, deleteProfile, userProfiles, activeProfileId, showProfileDropdown,
             processMainContent, replaceUserNamePlaceholder, replaceUserNamePlaceholderInHtml,
-            currentView, showDescriptionPanel, showModelSelector, modelSelectionTarget, openModelSelector, manualModelProviderId, manualModelId, modelSelectorProviderOptions, manualModelProviderSelectOptions, selectManualModel, showChatModelSelector, showCharacterEditor, showAddCharacterMenu, showPresetEditor, showUiTemplateEditor,
+            currentView, showDescriptionPanel, showModelSelector, modelSelectionTarget, openModelSelector, manualModelProviderId, manualModelId, modelSelectorProviderOptions, manualModelProviderSelectOptions, selectManualModel, showChatModelSelector, showContextBudgetPanel, toggleContextBudgetPanel, liveContextBudget, currentModelContextBudget, customHardLimitInput, customSweetSpotInput, setCurrentModelHardLimit, setCurrentModelSweetSpotRatio, applyCustomModelBudgetInputs, resetCurrentModelContextBudget, getHardLimitSourceLabel, formatContextTokenCount, MODEL_CONTEXT_LIMIT_PRESETS, MODEL_SWEET_SPOT_RATIO_PRESETS, showCharacterEditor, showAddCharacterMenu, showPresetEditor, showUiTemplateEditor,
             showActiveToolEditor,
             showExportModal, exportItems, selectedExportIndices, // Export Modal
             showContextViewerModal, lastContextMessages, lastTriggeredWorldInfos,

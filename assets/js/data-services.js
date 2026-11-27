@@ -840,21 +840,258 @@
         return finalMessages;
     };
 
+    const MODEL_CONTEXT_LIMIT_PRESETS = Object.freeze([
+        128000,
+        256000,
+        500000,
+        1000000,
+        2000000
+    ]);
+
+    const MODEL_SWEET_SPOT_RATIO_PRESETS = Object.freeze([0.2, 0.3, 0.4, 0.5]);
+    const DEFAULT_MODEL_CONTEXT_LIMIT = 256000;
+    const DEFAULT_SWEET_SPOT_RATIO = 0.3;
+
+    const buildModelBudgetKey = (providerId, modelId) => (
+        `${String(providerId || '').trim()}::${String(modelId || '').trim()}`
+    );
+
+    const extractModelContextLimit = (modelMeta) => {
+        if (!modelMeta || typeof modelMeta !== 'object') return null;
+        const candidates = [
+            modelMeta.context_length,
+            modelMeta.max_context_length,
+            modelMeta.context_window,
+            modelMeta.max_context_tokens,
+            modelMeta.input_token_limit,
+            modelMeta.max_input_tokens,
+            modelMeta.max_model_len,
+            modelMeta.top_provider?.context_length,
+            modelMeta.limits?.context,
+            modelMeta.limit?.context
+        ];
+        for (const value of candidates) {
+            const num = Number(value);
+            if (Number.isFinite(num) && num >= 4096 && num <= 10000000) {
+                return Math.round(num);
+            }
+        }
+        return null;
+    };
+
+    const inferDefaultModelContextLimit = (modelId) => {
+        const id = String(modelId || '').trim().toLowerCase();
+        if (!id) return { limit: DEFAULT_MODEL_CONTEXT_LIMIT, source: 'default' };
+        if (/(?:^|[-_/])2m(?:$|[-_/])/.test(id)) return { limit: 2000000, source: 'family' };
+        if (/(?:^|[-_/])1m(?:$|[-_/])/.test(id)) return { limit: 1000000, source: 'family' };
+        if (/(?:^|[-_/])500k(?:$|[-_/])/.test(id)) return { limit: 500000, source: 'family' };
+        if (/deepseek[-_./ ]*(?:v4|r2)|deepseek.*v4/i.test(id)) return { limit: 1000000, source: 'family' };
+        if (/gemini/i.test(id)) return { limit: 1000000, source: 'family' };
+        if (/grok[-_./ ]*[34]/i.test(id)) return { limit: 1000000, source: 'family' };
+        if (/qwen[-_./ ]*long/i.test(id)) return { limit: 1000000, source: 'family' };
+        if (/gpt[-_./ ]*(?:5|4\.1)/i.test(id)) return { limit: 1000000, source: 'family' };
+        if (/qwen[-_./ ]*(?:3|max|plus)|kimi|moonshot|glm[-_./ ]*[45]/i.test(id)) return { limit: 256000, source: 'family' };
+        if (/claude/i.test(id)) return { limit: 200000, source: 'family' };
+        if (/o[134][-_./ ]|gpt[-_./ ]*4o|deepseek/i.test(id)) return { limit: 128000, source: 'family' };
+        return { limit: DEFAULT_MODEL_CONTEXT_LIMIT, source: 'default' };
+    };
+
+    const roundContextTokens = (value) => {
+        const num = Math.max(4096, Math.round(Number(value) || 0));
+        if (num >= 100000) return Math.round(num / 5000) * 5000;
+        if (num >= 20000) return Math.round(num / 1000) * 1000;
+        return num;
+    };
+
+    const resolveModelContextBudget = ({ providerId = '', modelId = '', modelMeta = null, overrides = null } = {}) => {
+        const key = buildModelBudgetKey(providerId, modelId);
+        const overrideMap = overrides && typeof overrides === 'object' ? overrides : {};
+        const override = overrideMap[key] || overrideMap[`::${String(modelId || '').trim()}`] || null;
+        const metaLimit = extractModelContextLimit(modelMeta);
+        const inferred = inferDefaultModelContextLimit(modelId);
+
+        let hardLimit = inferred.limit;
+        let hardLimitSource = inferred.source;
+        if (metaLimit) {
+            hardLimit = metaLimit;
+            hardLimitSource = 'metadata';
+        }
+        const overrideHard = Number(override?.hardLimit);
+        if (Number.isFinite(overrideHard) && overrideHard >= 4096 && overrideHard <= 10000000) {
+            hardLimit = Math.round(overrideHard);
+            hardLimitSource = 'manual';
+        }
+
+        const reserveOutputTokens = Math.min(32000, Math.max(8000, Math.round(hardLimit * 0.04)));
+        const hardCapTokens = Math.max(4096, hardLimit - reserveOutputTokens);
+
+        let sweetSpotTokens = roundContextTokens(hardLimit * DEFAULT_SWEET_SPOT_RATIO);
+        let sweetSpotSource = 'default';
+        const overrideSweet = Number(override?.sweetSpotTokens);
+        const overrideRatio = Number(override?.sweetSpotRatio);
+        if (Number.isFinite(overrideSweet) && overrideSweet >= 4096) {
+            sweetSpotTokens = Math.min(hardCapTokens, Math.round(overrideSweet));
+            sweetSpotSource = 'manual';
+        } else if (Number.isFinite(overrideRatio) && overrideRatio > 0.05 && overrideRatio <= 0.95) {
+            sweetSpotTokens = Math.min(hardCapTokens, roundContextTokens(hardLimit * overrideRatio));
+            sweetSpotSource = 'manual';
+        }
+        sweetSpotTokens = Math.min(hardCapTokens, Math.max(4096, sweetSpotTokens));
+        const sweetSpotRatio = Number((sweetSpotTokens / hardLimit).toFixed(3));
+
+        return {
+            key,
+            hardLimit,
+            hardLimitSource,
+            sweetSpotTokens,
+            sweetSpotRatio,
+            sweetSpotSource,
+            reserveOutputTokens,
+            hardCapTokens
+        };
+    };
+
+    const CJK_CHAR_PATTERN = /[\u3400-\u9FFF\uF900-\uFAFF\u3000-\u303F\uFF00-\uFFEF]/g;
+    const estimateTextBaseTokens = (value) => {
+        const text = String(value || '');
+        if (!text) return 0;
+        const cjkMatches = text.match(CJK_CHAR_PATTERN);
+        const cjkCount = cjkMatches ? cjkMatches.length : 0;
+        const otherCount = Math.max(0, text.length - cjkCount);
+        return Math.ceil(cjkCount * 0.72 + otherCount * 0.30);
+    };
+
+    const extractMessageTextForTokenEstimate = (content) => {
+        if (typeof content === 'string') return content;
+        if (!Array.isArray(content)) return String(content || '');
+        return content.map(part => {
+            if (!part) return '';
+            if (typeof part === 'string') return part;
+            if (typeof part.text === 'string') return part.text;
+            if (part.type === 'image_url' || part.image_url) return '[image]'.repeat(120);
+            return '';
+        }).join('\n');
+    };
+
+    const estimateMessagesBaseTokens = (messages) => {
+        if (!Array.isArray(messages) || !messages.length) return 0;
+        return messages.reduce((sum, message) => {
+            if (!message) return sum;
+            const text = extractMessageTextForTokenEstimate(message.content);
+            const toolText = message.tool_calls ? JSON.stringify(message.tool_calls) : '';
+            return sum + 6 + estimateTextBaseTokens(text) + estimateTextBaseTokens(toolText);
+        }, 0);
+    };
+
+    const updateTokenCalibration = (prevEntry, { estimatedBaseTokens, actualInputTokens } = {}) => {
+        const base = Number(estimatedBaseTokens);
+        const actual = Number(actualInputTokens);
+        if (!Number.isFinite(base) || base < 150 || !Number.isFinite(actual) || actual <= 0) {
+            return prevEntry || null;
+        }
+        const rawFactor = actual / base;
+        if (!Number.isFinite(rawFactor) || rawFactor < 0.35 || rawFactor > 3.0) {
+            return prevEntry || null;
+        }
+        const prevSamples = Number(prevEntry?.samples) || 0;
+        const prevFactor = Number(prevEntry?.factor);
+        const nextFactor = prevSamples > 0 && Number.isFinite(prevFactor)
+            ? Number((prevFactor * 0.65 + rawFactor * 0.35).toFixed(4))
+            : Number(rawFactor.toFixed(4));
+        return {
+            factor: nextFactor,
+            samples: Math.min(999, prevSamples + 1),
+            lastActualInputTokens: Math.round(actual),
+            updatedAt: Date.now()
+        };
+    };
+
+    const formatContextTokenCount = (value) => {
+        const num = Number(value);
+        if (!Number.isFinite(num) || num <= 0) return '0';
+        if (num >= 1000000) {
+            const millions = num / 1000000;
+            return `${Number.isInteger(millions) ? millions : Number(millions.toFixed(2))}M`;
+        }
+        if (num >= 1000) {
+            const thousands = num / 1000;
+            if (thousands >= 100) return `${Math.round(thousands)}k`;
+            return `${Number.isInteger(thousands) ? thousands : Number(thousands.toFixed(1))}k`;
+        }
+        return String(Math.round(num));
+    };
+
+    const summarizeContextBudget = ({ sections = {}, budget, calibration = null } = {}) => {
+        const factor = Number.isFinite(Number(calibration?.factor)) && Number(calibration.factor) > 0
+            ? Number(calibration.factor)
+            : 1;
+        const sectionDefs = [
+            { key: 'system', label: '设定与预设', color: '#6366f1' },
+            { key: 'worldInfo', label: '世界书', color: '#0ea5e9' },
+            { key: 'uiTemplates', label: 'UI 模板变量', color: '#8b5cf6' },
+            { key: 'memories', label: '记忆摘要', color: '#10b981' },
+            { key: 'recentChat', label: '近期原文', color: '#f59e0b' }
+        ];
+        const items = sectionDefs.map(def => {
+            const raw = sections[def.key];
+            const baseTokens = typeof raw === 'number' ? raw : estimateTextBaseTokens(raw);
+            const tokens = Math.round(baseTokens * factor);
+            return { ...def, tokens };
+        });
+        const totalTokens = items.reduce((sum, item) => sum + item.tokens, 0);
+        const resolvedBudget = budget || resolveModelContextBudget();
+        const level = totalTokens >= resolvedBudget.hardCapTokens
+            ? 'danger'
+            : (totalTokens >= resolvedBudget.sweetSpotTokens ? 'sweetspot' : 'normal');
+        const sweetSpotPercent = resolvedBudget.sweetSpotTokens > 0
+            ? Math.min(999, Math.round((totalTokens / resolvedBudget.sweetSpotTokens) * 100))
+            : 0;
+        const hardLimitPercent = resolvedBudget.hardLimit > 0
+            ? Math.min(999, Math.round((totalTokens / resolvedBudget.hardLimit) * 100))
+            : 0;
+
+        return {
+            totalTokens,
+            level,
+            sweetSpotPercent,
+            hardLimitPercent,
+            calibrated: Boolean(calibration && Number(calibration.samples) > 0),
+            calibrationSamples: Number(calibration?.samples) || 0,
+            calibrationFactor: factor,
+            budget: resolvedBudget,
+            sections: items.map(item => ({
+                ...item,
+                percent: totalTokens > 0 ? Math.round((item.tokens / totalTokens) * 100) : 0
+            }))
+        };
+    };
+
     window.RPHubContextUtils = {
+        MODEL_CONTEXT_LIMIT_PRESETS,
+        MODEL_SWEET_SPOT_RATIO_PRESETS,
         appendEnhancedMemoryRecall,
         buildContextViewerState,
         buildConversationTurnSnapshot,
+        buildModelBudgetKey,
         escapeXmlAttribute,
         escapeXmlText,
+        estimateMessagesBaseTokens,
+        estimateTextBaseTokens,
+        extractModelContextLimit,
+        formatContextTokenCount,
         getConversationTurnAtIndexFromSnapshot,
         getPostprocessedChatMessages,
         indentXmlText,
+        inferDefaultModelContextLimit,
         injectContextMessages,
         isRoleMemoryContextContent,
         mergeConsecutiveRoleMessages,
         postprocessContextMessages,
+        resolveModelContextBudget,
         resolveWorldInfoEntries,
+        summarizeContextBudget,
         toNonNegativeNumber,
+        updateTokenCalibration,
         worldInfoKeyMatchesText
     };
 })();

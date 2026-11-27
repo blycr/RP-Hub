@@ -6,6 +6,22 @@
 
 ---
 
+## [2.0.6-custom.5] - 2026-11-27
+
+### 概述（Overview）
+新增面向现代大上下文模型（`128k / 256k / 500k / 1M / 2M`）的 API 实测自校准 Token 估算器、按模型独立的双水位线（质量甜点线与安全红线）配置，以及输入框顶部的实时绿/黄/红水位条与 5 层 Token 占比可视化面板。
+
+### 新增（Added）
+- 新增 API 实测自校准 Token 估算机制（`estimateTextBaseTokens`、`estimateMessagesBaseTokens`、`updateTokenCalibration`）：按中英文/JSON 权重估算并在每次真实聊天响应返回 `inputTokens` 后按 `(供应商 + 模型)` 维度通过滑动平均自动校准，无需引入笨重本地分词器。
+- 新增按 `(providerId, modelId)` 独立的上下文硬上限与质量甜点线解析（三级来源：用户手动设置 ＞ `/v1/models` 接口元数据 ＞ 现代模型家族默认表，支持 `DeepSeek V4` 1M / 300k 甜点区等现代大模型）。
+- 聊天输入区顶部新增可点击的实时上下文水位胶囊（绿/黄/红三态）与展开式监控配置面板：实时展示「设定与预设 / 世界书 / UI 模板变量 / 记忆摘要 / 近期原文」5 层占比，支持一键切换当前模型上限（`128k / 256k / 500k / 1M / 2M`）、甜点比例（`20% / 30% / 40% / 50%`）或自定义输入（如 `1M`、`300k`、`30w`）。
+- 新增 `tests/context-budget.test.js` 行为回归测试。
+
+### 改进（Improved）
+- 删除自定义供应商时同步清理该供应商关联的 `modelContextBudgets` 与 `modelTokenCalibrations`，避免残留孤立配置键。
+
+---
+
 ## [2.0.6-custom.4] - 2026-11-27
 
 ### 概述（Overview）
