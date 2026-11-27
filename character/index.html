@@ -1441,7 +1441,7 @@
         </div>
     </div>
 
-    <script>
+    <script data-cfasync="false">
         const { createApp, ref, reactive, computed, watch, onMounted, onBeforeUnmount, nextTick } = Vue;
         const AddItemButton = {
             emits: ['add'],
@@ -1774,9 +1774,6 @@ You are carrying out a fictional character card creation and editing task. Act a
                     }
                 };
 
-                // Call sync setup
-                setupSyncListener();
-
                 // Settings are supplied by the main page, not persisted a second time.
                 const options = reactive({
                     imageGenKey: '',
@@ -1800,6 +1797,9 @@ You are carrying out a fictional character card creation and editing task. Act a
                     modelConfigs: {},
                     stream: true
                 });
+
+                // Call sync setup only after options and api are initialized to avoid TDZ errors on fast SYNC_SETTINGS.
+                setupSyncListener();
                 const requestWorkshopCompletion = async (messages, { stream, temperature, onContent, replyInTool = false, tools, requireTool = false, onToolCalls }) => {
                     if (!String(api.url || '').trim()) throw new Error('请先填写当前 API 预设的地址');
                     if (!String(api.key || '').trim()) throw new Error('请先填写当前 API 预设的 Key');
@@ -2176,6 +2176,7 @@ You are carrying out a fictional character card creation and editing task. Act a
 
 
                 // Storage Logic (IndexedDB via localforage)
+                const fallbackCharacter = createEmptyCharacter();
                 const characters = ref([createEmptyCharacter()]);
                 const isLoaded = ref(false);
 
@@ -2187,30 +2188,42 @@ You are carrying out a fictional character card creation and editing task. Act a
                     try {
                         // Load from IndexedDB
                         const saved = await localforage.getItem('ai_chargen_characters');
+                        let validChars = [];
                         if (saved) {
-                            const parsed = JSON.parse(saved);
-                            // Ensure every character has an ID for virtualization keys
-                            parsed.forEach(c => {
-                                if (!c.id) c.id = generateUUID();
-                                normalizeCharacterShape(c);
-                            });
-                            characters.value = parsed;
-                        }
-
-                        // Restore active index
-                        const savedIndex = localStorage.getItem('ai_chargen_active_index');
-                        if (savedIndex !== null) {
-                            const idx = parseInt(savedIndex);
-                            if (!isNaN(idx) && idx >= 0 && idx < characters.value.length) {
-                                currentCharacterIndex.value = idx;
-                            } else if (characters.value.length > 0) {
-                                // If saved index is invalid (e.g. deleted), go to last
-                                currentCharacterIndex.value = characters.value.length - 1;
+                            const rawParsed = typeof saved === 'string' ? JSON.parse(saved) : saved;
+                            if (Array.isArray(rawParsed)) {
+                                validChars = rawParsed
+                                    .filter(c => c && typeof c === 'object' && !Array.isArray(c))
+                                    .map(c => {
+                                        if (!c.id) c.id = generateUUID();
+                                        return normalizeCharacterShape(c);
+                                    });
                             }
                         }
+
+                        // 始终保证至少存在一张可编辑角色卡（防止同步恢复空数组 "[]" 或异常数据把列表置空导致白屏）
+                        const nextChars = validChars.length > 0 ? validChars : [createEmptyCharacter()];
+
+                        // Restore & clamp active index before updating characters so currentCharacter is never undefined
+                        let nextIndex = 0;
+                        const savedIndex = localStorage.getItem('ai_chargen_active_index');
+                        if (savedIndex !== null) {
+                            const idx = parseInt(savedIndex, 10);
+                            if (!isNaN(idx) && idx >= 0 && idx < nextChars.length) {
+                                nextIndex = idx;
+                            } else {
+                                nextIndex = nextChars.length - 1;
+                            }
+                        }
+                        currentCharacterIndex.value = nextIndex;
+                        characters.value = nextChars;
                     } catch (err) {
                         console.error('Data load error:', err);
-                        showToast('数据加载出错', 'error');
+                        if (!Array.isArray(characters.value) || characters.value.length === 0) {
+                            characters.value = [createEmptyCharacter()];
+                        }
+                        currentCharacterIndex.value = 0;
+                        showToast('数据加载出错，已恢复默认空白角色卡', 'error');
                     } finally {
                         isLoaded.value = true;
                     }
@@ -2243,9 +2256,9 @@ You are carrying out a fictional character card creation and editing task. Act a
 
 
                 // Computed
-                const currentCharacter = computed(() => characters.value[currentCharacterIndex.value]);
-                const worldInfo = computed(() => currentCharacter.value.worldInfo);
-                const regexScripts = computed(() => currentCharacter.value.regexScripts);
+                const currentCharacter = computed(() => characters.value[currentCharacterIndex.value] || characters.value[0] || fallbackCharacter);
+                const worldInfo = computed(() => Array.isArray(currentCharacter.value?.worldInfo) ? currentCharacter.value.worldInfo : []);
+                const regexScripts = computed(() => Array.isArray(currentCharacter.value?.regexScripts) ? currentCharacter.value.regexScripts : []);
                 const readJsonFile = (event, onData, errorMessage = '导入失败') => {
                     const file = event.target.files?.[0];
                     if (!file) return;
@@ -2981,7 +2994,7 @@ ${FIRST_MESSAGE_FINAL_CHECKS}
                 };
 
                 // Watch avatar changes to trigger loading state
-                watch(() => currentCharacter.value.avatar, (newVal) => {
+                watch(() => currentCharacter.value?.avatar, (newVal) => {
                     if (newVal && !newVal.startsWith('data:')) {
                         isAvatarLoading.value = true;
                     } else {

@@ -6,6 +6,18 @@
 
 ---
 
+## [2.0.6-custom.8] - 2026-11-28
+
+### 概述（Overview）
+修复角色卡生成页面（工坊 `character/index.html`）在 IndexedDB 存有空角色列表或异常索引时触发渲染崩溃导致完全白屏的问题，并加固工坊启动脚本顺序与防异步改写标记。
+
+### 修复（Fixed）
+- 修复角色卡工坊加载 `ai_chargen_characters` 为空数组（`"[]"`，例如跨设备云同步恢复空工坊后）或异常/越界索引时，将 `characters.value` 置空导致 `currentCharacter.value` 为 `undefined` 并抛出 `Cannot read properties of undefined (reading 'avatar')` 引起整页白屏的问题；现强制保底至少一张可编辑空白角色卡并对 `currentCharacter` / `worldInfo` / `regexScripts` / 头像 watcher 做防御性兜底。
+- 修复工坊 `setupSyncListener()` 在 `options` 与 `api` 声明之前调用的初始化顺序隐患，避免父页面快速下发 `SYNC_SETTINGS` 时触发 TDZ 异常。
+- 为工坊主内联 `<script>` 补全 `data-cfasync="false"`，防止边缘代理异步改写脚本顺序导致页面卡在 `v-cloak` 空白态。
+
+---
+
 ## [2.0.6-custom.7] - 2026-11-27
 
 ### 概述（Overview）
