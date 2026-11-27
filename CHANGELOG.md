@@ -6,6 +6,22 @@
 
 ---
 
+## [2.0.6-custom.6] - 2026-11-27
+
+### 概述（Overview）
+落地长对话保精度与保格式治理（第二期 2B）：新增近端角色卡格式守卫锚点、双阈值原文控窗与安全红线保护裁剪、结构化双轨记忆总结提示词，以及免计费多协议上限与 Token 计数探测。
+
+### 新增（Added）
+- 新增近端格式守卫锚点（`buildProximalFormatAnchor`）：长对话（≥ 8 轮或超出质量甜点线）时在 `<next_response>` 内自动注入紧凑的 `<format_anchor>`，守护角色卡专属正则格式、输出标记与 `<ui_template_updates>` 结构，防止长距离注意力衰减导致丢格式。
+- 新增双阈值近期原文窗口（`computeEffectiveSummaryKeepFloors`）与安全红线保护（`enforceHardCapOnMessages`）：甜点区内不提前压缩，超甜点线时优先平滑切换为已有记忆摘要（至少保底 6 楼近期原文），逼近安全红线时省略最早中段历史并插入省略提示，避免 `400 context_length_exceeded` 卡死。
+- 新增按需免计费多协议探测（`probeModelContextAndTokenizer` 与上下文面板内「探测上限/协议」按钮）：依次探测 `GET /models/{id}` 元数据与 `Responses /input_tokens`、`Anthropic /messages/count_tokens`、`Gemini :countTokens`，命中即刻完成精准校准并缓存协议模式，未命中则无感回退真实对话 `usage` 自动校准。
+- 新增 `tests/phase2b-context-resilience.test.js` 行为回归测试。
+
+### 改进（Improved）
+- 升级经典单轮总结与 5 合 1 二次合并提示词为「`【硬事实】` + `【剧情】`」结构化双轨格式，合并时严格保留地点/衣着/物品归属、明确承诺与未解伏笔，避免无脑散文压缩损失创作精度。
+
+---
+
 ## [2.0.6-custom.5] - 2026-11-27
 
 ### 概述（Overview）

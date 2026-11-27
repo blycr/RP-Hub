@@ -1066,13 +1066,234 @@
         };
     };
 
+    const MIN_PROTECTED_RAW_FLOORS = 6;
+    const FORMAT_ANCHOR_MIN_TURNS = 8;
+    const TOKEN_PROBE_SAMPLE = [
+        '北方的冬夜来得极早，屋里点着昏黄的油灯。她抬起头看了眼窗外飘落的大雪，轻声道：“别站在门口吹风了，快进来坐下。”',
+        '{"scene":{"location":"main_room","time":"night","mood":"calm"},"status":{"energy":85,"trust":42}}',
+        'Keep character voice, formatting markers, and narrative continuity consistent across long conversations.'
+    ].join('\n');
+
+    const buildProximalFormatAnchor = ({
+        character = null,
+        regexScripts = [],
+        activeUiTemplates = [],
+        turnCount = 0,
+        budgetLevel = 'normal',
+        uiTemplateMainModelAnalysis = false
+    } = {}) => {
+        const shouldActivate = Number(turnCount) >= FORMAT_ANCHOR_MIN_TURNS
+            || budgetLevel === 'sweetspot'
+            || budgetLevel === 'danger';
+        if (!shouldActivate || !character) return '';
+
+        const lines = [];
+        const charRegexNames = (Array.isArray(regexScripts) ? regexScripts : [])
+            .filter(script => (
+                script
+                && script.scope === 'character'
+                && script.enabled !== false
+                && !script.promptOnly
+                && (script.name || script.scriptName) !== 'NAI画图正则'
+            ))
+            .map(script => String(script.name || script.scriptName || '').trim())
+            .filter(Boolean)
+            .slice(0, 5);
+
+        if (charRegexNames.length) {
+            lines.push(`本角色卡已启用格式正则：${charRegexNames.join('、')}；请严格沿用开场白与角色卡约定的输出结构、标记符号与段落排版，勿因长对话省略。`);
+        }
+        if (uiTemplateMainModelAnalysis && Array.isArray(activeUiTemplates) && activeUiTemplates.length > 0) {
+            lines.push('正文结束后按当前变量 JSON 结构输出 <ui_template_updates> 块，禁止在正文中提及或破坏原有排版。');
+        }
+        const customNote = String(character.formatAnchor || '').trim().slice(0, 400);
+        if (customNote) lines.push(customNote);
+        if (!lines.length) {
+            lines.push('保持角色卡开场白与设定中的叙事视角、人称、称呼和输出格式，不因长对话产生风格或格式漂移。');
+        }
+        return ['<format_anchor>', ...lines, '</format_anchor>'].join('\n');
+    };
+
+    const computeEffectiveSummaryKeepFloors = ({
+        messages = [],
+        configuredKeepFloors = 20,
+        budget = null,
+        calibration = null
+    } = {}) => {
+        const baseline = Math.max(MIN_PROTECTED_RAW_FLOORS, Number(configuredKeepFloors) || 20);
+        if (!Array.isArray(messages) || messages.length <= MIN_PROTECTED_RAW_FLOORS || !budget) {
+            return baseline;
+        }
+        const factor = Number.isFinite(Number(calibration?.factor)) && Number(calibration.factor) > 0
+            ? Number(calibration.factor)
+            : 1;
+        const rawBudget = Math.max(8000, Math.round((Number(budget.sweetSpotTokens) || 80000) * 0.65));
+        const startFloor = Math.max(0, messages.length - baseline);
+        let keptFloors = 0;
+        let accumulatedTokens = 0;
+        for (let i = messages.length - 1; i >= startFloor; i--) {
+            const msg = messages[i];
+            const msgTokens = Math.round((6 + estimateTextBaseTokens(extractMessageTextForTokenEstimate(msg?.content))) * factor);
+            if (keptFloors >= MIN_PROTECTED_RAW_FLOORS && accumulatedTokens + msgTokens > rawBudget) {
+                break;
+            }
+            accumulatedTokens += msgTokens;
+            keptFloors++;
+        }
+        return Math.max(MIN_PROTECTED_RAW_FLOORS, Math.min(baseline, keptFloors));
+    };
+
+    const enforceHardCapOnMessages = ({
+        messages = [],
+        safePrefixCount = 1,
+        budget = null,
+        calibration = null,
+        minProtectedTailMessages = MIN_PROTECTED_RAW_FLOORS
+    } = {}) => {
+        if (!Array.isArray(messages) || !messages.length || !budget) {
+            return { messages: Array.isArray(messages) ? messages : [], trimmedCount: 0, estimatedTokens: 0 };
+        }
+        const factor = Number.isFinite(Number(calibration?.factor)) && Number(calibration.factor) > 0
+            ? Number(calibration.factor)
+            : 1;
+        const hardCap = Number(budget.hardCapTokens) || 0;
+        const tokenOf = (msg) => Math.round((6 + estimateTextBaseTokens(extractMessageTextForTokenEstimate(msg?.content))
+            + (msg?.tool_calls ? estimateTextBaseTokens(JSON.stringify(msg.tool_calls)) : 0)) * factor);
+        const perMsgTokens = messages.map(tokenOf);
+        let total = perMsgTokens.reduce((sum, val) => sum + val, 0);
+        if (!hardCap || total <= hardCap) {
+            return { messages, trimmedCount: 0, estimatedTokens: total };
+        }
+
+        const prefixEnd = Math.max(0, Math.min(Number(safePrefixCount) || 1, messages.length));
+        const tailStart = Math.max(prefixEnd, messages.length - Math.max(2, Number(minProtectedTailMessages) || MIN_PROTECTED_RAW_FLOORS));
+        if (tailStart <= prefixEnd) {
+            return { messages, trimmedCount: 0, estimatedTokens: total };
+        }
+
+        let cutIndex = prefixEnd;
+        while (cutIndex < tailStart && total > hardCap) {
+            total -= perMsgTokens[cutIndex];
+            cutIndex++;
+            // 尽量成对移除 user+assistant，避免留下孤立半轮
+            if (cutIndex < tailStart && total > hardCap
+                && messages[cutIndex - 1]?.role === 'user'
+                && messages[cutIndex]?.role === 'assistant') {
+                total -= perMsgTokens[cutIndex];
+                cutIndex++;
+            }
+        }
+        const trimmedCount = cutIndex - prefixEnd;
+        if (trimmedCount <= 0) {
+            return { messages, trimmedCount: 0, estimatedTokens: total };
+        }
+        const noticeMessage = {
+            role: 'system',
+            content: `[上下文红线保护：已省略较早的 ${trimmedCount} 条历史消息以防超出模型上下文上限，请以当前设定、记忆摘要、最新变量快照与近期对话为准继续剧情。]`
+        };
+        const nextMessages = [
+            ...messages.slice(0, prefixEnd),
+            noticeMessage,
+            ...messages.slice(cutIndex)
+        ];
+        return {
+            messages: nextMessages,
+            trimmedCount,
+            estimatedTokens: total + tokenOf(noticeMessage)
+        };
+    };
+
+    const probeModelContextAndTokenizer = async ({
+        baseUrl = '',
+        apiKey = '',
+        modelId = '',
+        sessionId = '',
+        requestJson,
+        buildApiEndpoint
+    } = {}) => {
+        const result = {
+            contextLimit: null,
+            probeMode: 'passive_usage',
+            calibratedInputTokens: null,
+            sampleBaseTokens: estimateTextBaseTokens(TOKEN_PROBE_SAMPLE),
+            tried: []
+        };
+        if (!baseUrl || !apiKey || !modelId || typeof requestJson !== 'function' || typeof buildApiEndpoint !== 'function') {
+            return result;
+        }
+        const safePostOrGet = async (label, opts) => {
+            try {
+                const data = await requestJson({ apiKey, sessionId, timeoutMs: 8000, ...opts });
+                result.tried.push({ label, ok: true });
+                return data;
+            } catch (error) {
+                result.tried.push({ label, ok: false, error: String(error?.message || error).slice(0, 120) });
+                return null;
+            }
+        };
+
+        // 1. 免计费单模型详情探测：部分中转只在 GET /models/{id} 返回 context_length
+        const modelsBase = buildApiEndpoint(baseUrl, 'models').replace(/\/+$/, '');
+        const detail = await safePostOrGet('models_detail', {
+            url: `${modelsBase}/${encodeURIComponent(modelId)}`,
+            method: 'GET'
+        });
+        const detectedLimit = extractModelContextLimit(detail);
+        if (detectedLimit) result.contextLimit = detectedLimit;
+
+        // 2. 多协议零生成成本 Token 计数探测：哪个通就用哪个
+        const responsesEndpoint = buildApiEndpoint(baseUrl, 'responses').replace(/\/+$/, '');
+        const responsesCount = await safePostOrGet('responses_input_tokens', {
+            url: `${responsesEndpoint}/input_tokens`,
+            method: 'POST',
+            body: { model: modelId, input: TOKEN_PROBE_SAMPLE }
+        });
+        const respTokens = Number(responsesCount?.input_tokens ?? responsesCount?.total_tokens);
+        if (Number.isFinite(respTokens) && respTokens > 0) {
+            result.probeMode = 'responses_input_tokens';
+            result.calibratedInputTokens = Math.round(respTokens);
+            return result;
+        }
+
+        const messagesEndpoint = buildApiEndpoint(baseUrl, 'messages').replace(/\/+$/, '');
+        const anthropicCount = await safePostOrGet('anthropic_count_tokens', {
+            url: `${messagesEndpoint}/count_tokens`,
+            method: 'POST',
+            body: { model: modelId, messages: [{ role: 'user', content: TOKEN_PROBE_SAMPLE }] }
+        });
+        const antTokens = Number(anthropicCount?.input_tokens ?? anthropicCount?.total_tokens);
+        if (Number.isFinite(antTokens) && antTokens > 0) {
+            result.probeMode = 'anthropic_count_tokens';
+            result.calibratedInputTokens = Math.round(antTokens);
+            return result;
+        }
+
+        const geminiCount = await safePostOrGet('gemini_count_tokens', {
+            url: `${modelsBase}/${encodeURIComponent(modelId)}:countTokens`,
+            method: 'POST',
+            body: { contents: [{ role: 'user', parts: [{ text: TOKEN_PROBE_SAMPLE }] }] }
+        });
+        const gemTokens = Number(geminiCount?.totalTokens ?? geminiCount?.total_tokens);
+        if (Number.isFinite(gemTokens) && gemTokens > 0) {
+            result.probeMode = 'gemini_count_tokens';
+            result.calibratedInputTokens = Math.round(gemTokens);
+            return result;
+        }
+
+        return result;
+    };
+
     window.RPHubContextUtils = {
+        MIN_PROTECTED_RAW_FLOORS,
         MODEL_CONTEXT_LIMIT_PRESETS,
         MODEL_SWEET_SPOT_RATIO_PRESETS,
         appendEnhancedMemoryRecall,
         buildContextViewerState,
         buildConversationTurnSnapshot,
         buildModelBudgetKey,
+        buildProximalFormatAnchor,
+        computeEffectiveSummaryKeepFloors,
+        enforceHardCapOnMessages,
         escapeXmlAttribute,
         escapeXmlText,
         estimateMessagesBaseTokens,
@@ -1087,6 +1308,7 @@
         isRoleMemoryContextContent,
         mergeConsecutiveRoleMessages,
         postprocessContextMessages,
+        probeModelContextAndTokenizer,
         resolveModelContextBudget,
         resolveWorldInfoEntries,
         summarizeContextBudget,

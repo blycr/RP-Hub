@@ -758,16 +758,24 @@
                                                 <span class="rounded bg-gray-100 px-1.5 py-0.5">{{ getHardLimitSourceLabel(liveContextBudget.budget.hardLimitSource) }}</span>
                                                 <span class="rounded px-1.5 py-0.5"
                                                     :class="liveContextBudget.calibrated ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'">
-                                                    {{ liveContextBudget.calibrated ? ('API 实测校准 ×' + liveContextBudget.calibrationSamples) : '未校准（首轮后自动校准）' }}
+                                                    {{ liveContextBudget.calibrated ? (getProbeModeLabel(currentModelTokenCalibration?.probeMode) + ' ×' + liveContextBudget.calibrationSamples) : '未校准（首轮后自动校准）' }}
                                                 </span>
                                             </div>
                                         </div>
-                                        <button type="button" @click="showContextBudgetPanel = false" aria-label="关闭上下文面板"
-                                            class="w-6 h-6 flex items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600">
-                                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-width="2" d="m6 6 12 12M18 6 6 18"></path>
-                                            </svg>
-                                        </button>
+                                        <div class="flex items-center gap-1 flex-none">
+                                            <button type="button" @click="probeCurrentModelContext"
+                                                :disabled="isProbingModelContext"
+                                                title="免计费探测模型详情与多协议计数端点（Responses / Anthropic / Gemini）"
+                                                class="rounded-lg border border-primary-200 bg-primary-50/80 px-2 py-1 text-[11px] font-semibold text-primary-700 hover:bg-primary-100 disabled:opacity-50 whitespace-nowrap">
+                                                {{ isProbingModelContext ? '探测中...' : '探测上限/协议' }}
+                                            </button>
+                                            <button type="button" @click="showContextBudgetPanel = false" aria-label="关闭上下文面板"
+                                                class="w-6 h-6 flex items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600">
+                                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-width="2" d="m6 6 12 12M18 6 6 18"></path>
+                                                </svg>
+                                            </button>
+                                        </div>
                                     </div>
                                     <div class="mt-2.5 space-y-1.5">
                                         <div class="flex items-center justify-between font-mono text-[11px]">

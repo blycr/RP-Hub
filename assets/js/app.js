@@ -78,6 +78,9 @@ const {
     buildContextViewerState,
     buildConversationTurnSnapshot: createConversationTurnSnapshot,
     buildModelBudgetKey,
+    buildProximalFormatAnchor,
+    computeEffectiveSummaryKeepFloors,
+    enforceHardCapOnMessages,
     escapeXmlAttribute,
     estimateMessagesBaseTokens,
     estimateTextBaseTokens,
@@ -88,6 +91,7 @@ const {
     injectContextMessages,
     isRoleMemoryContextContent,
     postprocessContextMessages,
+    probeModelContextAndTokenizer,
     resolveModelContextBudget,
     resolveWorldInfoEntries,
     summarizeContextBudget,
@@ -1978,20 +1982,32 @@ const app = createApp({
             toast: (...args) => showToast(...args)
         });
         const showContextBudgetPanel = ref(false);
+        const isProbingModelContext = ref(false);
         const customHardLimitInput = ref('');
         const customSweetSpotInput = ref('');
 
-        const calibrateModelTokenEstimator = (providerId, modelId, estimatedBaseTokens, actualInputTokens) => {
+        const getProbeModeLabel = (mode) => ({
+            responses_input_tokens: 'Responses 计数',
+            anthropic_count_tokens: 'Anthropic 计数',
+            gemini_count_tokens: 'Gemini 计数',
+            passive_usage: 'usage 自动校准'
+        }[mode] || 'usage 自动校准');
+
+        const calibrateModelTokenEstimator = (providerId, modelId, estimatedBaseTokens, actualInputTokens, probeMode = null) => {
             const key = buildModelBudgetKey(providerId, modelId);
             if (!modelId || !Number.isFinite(actualInputTokens) || actualInputTokens <= 0) return;
             const currentMap = settings.modelTokenCalibrations && typeof settings.modelTokenCalibrations === 'object'
                 ? settings.modelTokenCalibrations
                 : {};
-            const updated = updateTokenCalibration(currentMap[key], { estimatedBaseTokens, actualInputTokens });
+            const prev = currentMap[key] || null;
+            const updated = updateTokenCalibration(prev, { estimatedBaseTokens, actualInputTokens });
             if (!updated) return;
             settings.modelTokenCalibrations = {
                 ...currentMap,
-                [key]: updated
+                [key]: {
+                    ...updated,
+                    probeMode: probeMode || prev?.probeMode || 'passive_usage'
+                }
             };
             saveData({ saveMemories: false, saveCharacters: false });
         };
@@ -2194,6 +2210,74 @@ const app = createApp({
             customHardLimitInput.value = formatContextTokenCount(currentModelContextBudget.value.hardLimit);
             customSweetSpotInput.value = formatContextTokenCount(currentModelContextBudget.value.sweetSpotTokens);
             showToast('已恢复模型默认上下文配置', 'info');
+        };
+
+        const probeCurrentModelContext = async () => {
+            if (isProbingModelContext.value) return;
+            const modelId = String(settings.model || '').trim();
+            if (!modelId) {
+                showToast('请先选择模型再探测', 'warning');
+                return;
+            }
+            const providerId = currentChatProviderId.value;
+            let config;
+            try {
+                config = getProviderApiConfig(providerId);
+            } catch (error) {
+                showToast(error.message || '当前供应商未配置完整', 'error');
+                return;
+            }
+            isProbingModelContext.value = true;
+            try {
+                const probe = await probeModelContextAndTokenizer({
+                    baseUrl: config.apiUrl,
+                    apiKey: config.apiKey,
+                    modelId,
+                    sessionId: getCurrentStoryBranchScopeId(),
+                    requestJson,
+                    buildApiEndpoint
+                });
+                const notes = [];
+                if (probe.contextLimit) {
+                    const matched = availableModels.value.find(m => m && m.id === modelId && m.providerId === providerId);
+                    if (matched) matched.context_length = probe.contextLimit;
+                    const budgetKey = buildModelBudgetKey(providerId, modelId);
+                    const hasManualHard = Boolean(settings.modelContextBudgets?.[budgetKey]?.hardLimit);
+                    if (!hasManualHard) {
+                        updateCurrentModelContextBudget({ hardLimit: probe.contextLimit });
+                    }
+                    notes.push(`识别上限 ${formatContextTokenCount(probe.contextLimit)}`);
+                }
+                if (probe.calibratedInputTokens > 0) {
+                    calibrateModelTokenEstimator(
+                        providerId,
+                        modelId,
+                        probe.sampleBaseTokens,
+                        probe.calibratedInputTokens,
+                        probe.probeMode
+                    );
+                    notes.push(`${getProbeModeLabel(probe.probeMode)}已校准`);
+                } else {
+                    const key = buildModelBudgetKey(providerId, modelId);
+                    const currentMap = settings.modelTokenCalibrations && typeof settings.modelTokenCalibrations === 'object'
+                        ? settings.modelTokenCalibrations
+                        : {};
+                    if (currentMap[key]) {
+                        settings.modelTokenCalibrations = {
+                            ...currentMap,
+                            [key]: { ...currentMap[key], probeMode: 'passive_usage' }
+                        };
+                        saveData({ saveMemories: false, saveCharacters: false });
+                    }
+                    notes.push('无免计费计数端点，将沿用对话 usage 自动校准');
+                }
+                showToast(`探测完成：${notes.join(' · ')}`, probe.calibratedInputTokens || probe.contextLimit ? 'success' : 'info', 4000);
+            } catch (error) {
+                console.warn('[上下文探测] 失败:', error);
+                showToast('探测失败，请检查网络连接或接口配置', 'error');
+            } finally {
+                isProbingModelContext.value = false;
+            }
         };
 
         // RP-Hub-Sync upstream 1.9 provider routing
@@ -5338,7 +5422,7 @@ const app = createApp({
         const wrapAnalysis = (tag, text) => text
             ? `<${tag}>\n${text.replace(/<\s*\/?\s*(?:thinking|think|cot)\s*>/gi, '')}\n</${tag}>\n`
             : '';
-        const appendNextResponsePrompt = (messageList, { cotEnabled = false, useThinkingTag = false, writingStylePrompt = '' } = {}) => {
+        const appendNextResponsePrompt = (messageList, { cotEnabled = false, formatAnchor = '', useThinkingTag = false, writingStylePrompt = '' } = {}) => {
             const target = [...messageList].reverse().find(message => (
                 message?.role === 'user'
                 && Array.isArray(message._sourceIndexes)
@@ -5349,6 +5433,7 @@ const app = createApp({
             const prompt = BUILTIN_PROMPTS.buildNextResponsePrompt({
                 autoImageGenEnabled: isAutoImageGenEnabled.value,
                 cotEnabled,
+                formatAnchor,
                 imageGenCount: settings.imageGenCount,
                 memoryEnabled: memorySettings.enabled,
                 useThinkingTag,
@@ -5592,7 +5677,13 @@ const app = createApp({
 
             if (memorySettings.enabled
                 && classicMemories.value.length > 0) {
-                const candidateCount = Math.max(0, chatHistoryForContext.length - memorySettings.summaryKeepFloors);
+                const effectiveKeepFloors = computeEffectiveSummaryKeepFloors({
+                    messages: chatHistoryForContext,
+                    configuredKeepFloors: memorySettings.summaryKeepFloors,
+                    budget: currentModelContextBudget.value,
+                    calibration: currentModelTokenCalibration.value
+                });
+                const candidateCount = Math.max(0, chatHistoryForContext.length - effectiveKeepFloors);
                 if (candidateCount > 0) {
                     const lookup = buildClassicMemoryLookup();
                     const contextSnapshot = buildConversationTurnSnapshot(chatHistoryForContext, { alreadyPostprocessed: true });
@@ -5731,8 +5822,17 @@ const app = createApp({
                 .filter(m => String(m.content || '').trim())
             );
             appendPendingUiTemplateCorrection(messages);
+            const proximalFormatAnchor = buildProximalFormatAnchor({
+                character: currentCharacter.value,
+                regexScripts: regexScripts.value,
+                activeUiTemplates: activeUiTemplates.value,
+                turnCount: Math.floor(postprocessedChatHistory.length / 2),
+                budgetLevel: liveContextBudget.value.level,
+                uiTemplateMainModelAnalysis: isUiTemplateAnalysisEnabled()
+            });
             appendNextResponsePrompt(messages, {
                 cotEnabled: cotPresets.length > 0,
+                formatAnchor: proximalFormatAnchor,
                 useThinkingTag: usesThinkingCotTag(requestModel),
                 writingStylePrompt: writingStylePresets
                     .map(preset => preset.content
@@ -5757,6 +5857,18 @@ const app = createApp({
                     depth: array.length - 1 - index
                 })
             }));
+
+            // 红线保护降载：仅在逼近模型安全红线时省略最早中段历史，永不裁切设定与最近保底轮次
+            const hardCapResult = enforceHardCapOnMessages({
+                messages,
+                safePrefixCount: safeTargetLimit,
+                budget: currentModelContextBudget.value,
+                calibration: currentModelTokenCalibration.value
+            });
+            if (hardCapResult.trimmedCount > 0) {
+                messages = hardCapResult.messages;
+                showToast(`已触发上下文红线保护：自动省略较早的 ${hardCapResult.trimmedCount} 条历史以防接口超限`, 'warning', 4500);
+            }
 
             let generatedAssistantMessageId = null;
             let assistantMessage = null;
@@ -9402,7 +9514,7 @@ const app = createApp({
         return {
             switchProfile, createNewProfile, deleteProfile, userProfiles, activeProfileId, showProfileDropdown,
             processMainContent, replaceUserNamePlaceholder, replaceUserNamePlaceholderInHtml,
-            currentView, showDescriptionPanel, showModelSelector, modelSelectionTarget, openModelSelector, manualModelProviderId, manualModelId, modelSelectorProviderOptions, manualModelProviderSelectOptions, selectManualModel, showChatModelSelector, showContextBudgetPanel, toggleContextBudgetPanel, liveContextBudget, currentModelContextBudget, customHardLimitInput, customSweetSpotInput, setCurrentModelHardLimit, setCurrentModelSweetSpotRatio, applyCustomModelBudgetInputs, resetCurrentModelContextBudget, getHardLimitSourceLabel, formatContextTokenCount, MODEL_CONTEXT_LIMIT_PRESETS, MODEL_SWEET_SPOT_RATIO_PRESETS, showCharacterEditor, showAddCharacterMenu, showPresetEditor, showUiTemplateEditor,
+            currentView, showDescriptionPanel, showModelSelector, modelSelectionTarget, openModelSelector, manualModelProviderId, manualModelId, modelSelectorProviderOptions, manualModelProviderSelectOptions, selectManualModel, showChatModelSelector, showContextBudgetPanel, isProbingModelContext, toggleContextBudgetPanel, probeCurrentModelContext, getProbeModeLabel, currentModelTokenCalibration, liveContextBudget, currentModelContextBudget, customHardLimitInput, customSweetSpotInput, setCurrentModelHardLimit, setCurrentModelSweetSpotRatio, applyCustomModelBudgetInputs, resetCurrentModelContextBudget, getHardLimitSourceLabel, formatContextTokenCount, MODEL_CONTEXT_LIMIT_PRESETS, MODEL_SWEET_SPOT_RATIO_PRESETS, showCharacterEditor, showAddCharacterMenu, showPresetEditor, showUiTemplateEditor,
             showActiveToolEditor,
             showExportModal, exportItems, selectedExportIndices, // Export Modal
             showContextViewerModal, lastContextMessages, lastTriggeredWorldInfos,
