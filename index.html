@@ -763,11 +763,18 @@
                                             </div>
                                         </div>
                                         <div class="flex items-center gap-1 flex-none">
-                                            <button type="button" @click="probeCurrentModelContext"
+                                            <button type="button" @click="probeCurrentModelContext()"
                                                 :disabled="isProbingModelContext"
-                                                title="免计费探测模型详情与多协议计数端点（Responses / Anthropic / Gemini）"
+                                                title="免计费探测模型详情与多协议计数端点（24 小时内自动复用探测结果）"
                                                 class="rounded-lg border border-primary-200 bg-primary-50/80 px-2 py-1 text-[11px] font-semibold text-primary-700 hover:bg-primary-100 disabled:opacity-50 whitespace-nowrap">
                                                 {{ isProbingModelContext ? '探测中...' : '探测上限/协议' }}
+                                            </button>
+                                            <button v-if="currentModelTokenCalibration?.lastProbedAt" type="button"
+                                                @click="probeCurrentModelContext({ force: true })"
+                                                :disabled="isProbingModelContext"
+                                                title="跳过 24 小时冷却强制重新探测所有免计费协议端点"
+                                                class="rounded-lg border border-gray-200 bg-gray-50 px-1.5 py-1 text-[11px] font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-50 whitespace-nowrap">
+                                                重测
                                             </button>
                                             <button type="button" @click="showContextBudgetPanel = false" aria-label="关闭上下文面板"
                                                 class="w-6 h-6 flex items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600">

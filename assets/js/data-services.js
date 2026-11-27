@@ -1068,6 +1068,8 @@
 
     const MIN_PROTECTED_RAW_FLOORS = 6;
     const FORMAT_ANCHOR_MIN_TURNS = 8;
+    const HARD_CAP_HYSTERESIS_RATIO = 0.85;
+    const TOKEN_PROBE_COOLDOWN_MS = 24 * 60 * 60 * 1000;
     const TOKEN_PROBE_SAMPLE = [
         '北方的冬夜来得极早，屋里点着昏黄的油灯。她抬起头看了眼窗外飘落的大雪，轻声道：“别站在门口吹风了，快进来坐下。”',
         '{"scene":{"location":"main_room","time":"night","mood":"calm"},"status":{"energy":85,"trust":42}}',
@@ -1148,10 +1150,18 @@
         safePrefixCount = 1,
         budget = null,
         calibration = null,
-        minProtectedTailMessages = MIN_PROTECTED_RAW_FLOORS
+        minProtectedTailMessages = MIN_PROTECTED_RAW_FLOORS,
+        hysteresisTargetRatio = HARD_CAP_HYSTERESIS_RATIO,
+        previousCutAnchorFloor = 0
     } = {}) => {
         if (!Array.isArray(messages) || !messages.length || !budget) {
-            return { messages: Array.isArray(messages) ? messages : [], trimmedCount: 0, estimatedTokens: 0 };
+            return {
+                messages: Array.isArray(messages) ? messages : [],
+                trimmedCount: 0,
+                advancedBatch: false,
+                nextCutAnchorFloor: 0,
+                estimatedTokens: 0
+            };
         }
         const factor = Number.isFinite(Number(calibration?.factor)) && Number(calibration.factor) > 0
             ? Number(calibration.factor)
@@ -1161,35 +1171,63 @@
             + (msg?.tool_calls ? estimateTextBaseTokens(JSON.stringify(msg.tool_calls)) : 0)) * factor);
         const perMsgTokens = messages.map(tokenOf);
         let total = perMsgTokens.reduce((sum, val) => sum + val, 0);
-        if (!hardCap || total <= hardCap) {
-            return { messages, trimmedCount: 0, estimatedTokens: total };
+        if (!hardCap) {
+            return { messages, trimmedCount: 0, advancedBatch: false, nextCutAnchorFloor: 0, estimatedTokens: total };
         }
 
         const prefixEnd = Math.max(0, Math.min(Number(safePrefixCount) || 1, messages.length));
         const tailStart = Math.max(prefixEnd, messages.length - Math.max(2, Number(minProtectedTailMessages) || MIN_PROTECTED_RAW_FLOORS));
         if (tailStart <= prefixEnd) {
-            return { messages, trimmedCount: 0, estimatedTokens: total };
+            return { messages, trimmedCount: 0, advancedBatch: false, nextCutAnchorFloor: 0, estimatedTokens: total };
         }
 
+        // 先复用本分支已锁定的单调裁剪锚点，确保滞回缓冲期内前缀逐字节冻结以维持 KV 缓存命中。
+        const prevAnchor = Math.max(0, Math.floor(Number(previousCutAnchorFloor) || 0));
         let cutIndex = prefixEnd;
-        while (cutIndex < tailStart && total > hardCap) {
-            total -= perMsgTokens[cutIndex];
-            cutIndex++;
-            // 尽量成对移除 user+assistant，避免留下孤立半轮
-            if (cutIndex < tailStart && total > hardCap
-                && messages[cutIndex - 1]?.role === 'user'
-                && messages[cutIndex]?.role === 'assistant') {
+        if (prevAnchor > 0) {
+            while (cutIndex < tailStart) {
+                const floor = Number(messages[cutIndex]?._contextFloor);
+                if (!Number.isFinite(floor) || floor > prevAnchor) break;
                 total -= perMsgTokens[cutIndex];
                 cutIndex++;
             }
         }
+
+        let advancedBatch = false;
+        if (total > hardCap) {
+            const clampedRatio = Math.min(0.95, Math.max(0.5, Number(hysteresisTargetRatio) || HARD_CAP_HYSTERESIS_RATIO));
+            const targetTokens = Math.max(1024, Math.round(hardCap * clampedRatio));
+            const startCut = cutIndex;
+            while (cutIndex < tailStart && total > targetTokens) {
+                total -= perMsgTokens[cutIndex];
+                cutIndex++;
+                // 尽量成对移除 user+assistant，避免留下孤立半轮
+                if (cutIndex < tailStart && total > targetTokens
+                    && messages[cutIndex - 1]?.role === 'user'
+                    && messages[cutIndex]?.role === 'assistant') {
+                    total -= perMsgTokens[cutIndex];
+                    cutIndex++;
+                }
+            }
+            if (cutIndex > startCut) advancedBatch = true;
+        }
+
         const trimmedCount = cutIndex - prefixEnd;
         if (trimmedCount <= 0) {
-            return { messages, trimmedCount: 0, estimatedTokens: total };
+            return { messages, trimmedCount: 0, advancedBatch: false, nextCutAnchorFloor: 0, estimatedTokens: total };
         }
+
+        let nextCutAnchorFloor = prevAnchor;
+        for (let i = prefixEnd; i < cutIndex; i++) {
+            const floor = Number(messages[i]?._contextFloor);
+            if (Number.isFinite(floor) && floor > nextCutAnchorFloor) nextCutAnchorFloor = floor;
+        }
+        const scopeNotice = nextCutAnchorFloor > 0
+            ? `已省略早期历史（截至第 ${nextCutAnchorFloor} 楼）以防超出模型上下文上限`
+            : `已省略较早的 ${trimmedCount} 条历史消息以防超出模型上下文上限`;
         const noticeMessage = {
             role: 'system',
-            content: `[上下文红线保护：已省略较早的 ${trimmedCount} 条历史消息以防超出模型上下文上限，请以当前设定、记忆摘要、最新变量快照与近期对话为准继续剧情。]`
+            content: `[上下文红线保护：${scopeNotice}，请以当前设定、记忆摘要、最新变量快照与近期对话为准继续剧情。]`
         };
         const nextMessages = [
             ...messages.slice(0, prefixEnd),
@@ -1199,31 +1237,77 @@
         return {
             messages: nextMessages,
             trimmedCount,
+            advancedBatch,
+            nextCutAnchorFloor,
             estimatedTokens: total + tokenOf(noticeMessage)
         };
+    };
+
+    const orderTokenizerProbeCandidates = ({ chatProtocol = '', baseUrl = '', modelId = '' } = {}) => {
+        const hint = `${String(baseUrl || '')} ${String(modelId || '')}`.toLowerCase();
+        if (chatProtocol === 'openai_responses') {
+            return ['responses_input_tokens', 'anthropic_count_tokens', 'gemini_count_tokens'];
+        }
+        if (/anthropic|claude/.test(hint)) {
+            return ['anthropic_count_tokens', 'responses_input_tokens', 'gemini_count_tokens'];
+        }
+        if (/generativelanguage\.googleapis\.com|gemini/.test(hint)) {
+            return ['gemini_count_tokens', 'responses_input_tokens', 'anthropic_count_tokens'];
+        }
+        return ['responses_input_tokens', 'anthropic_count_tokens', 'gemini_count_tokens'];
     };
 
     const probeModelContextAndTokenizer = async ({
         baseUrl = '',
         apiKey = '',
         modelId = '',
-        sessionId = '',
+        chatProtocol = '',
+        previousProbeMode = '',
+        lastProbedAt = 0,
+        knownContextLimit = null,
+        force = false,
+        cooldownMs = TOKEN_PROBE_COOLDOWN_MS,
+        gatewayActive = false,
+        now = Date.now(),
         requestJson,
         buildApiEndpoint
     } = {}) => {
         const result = {
-            contextLimit: null,
-            probeMode: 'passive_usage',
+            contextLimit: Number(knownContextLimit) > 0 ? Number(knownContextLimit) : null,
+            probeMode: previousProbeMode || 'passive_usage',
             calibratedInputTokens: null,
             sampleBaseTokens: estimateTextBaseTokens(TOKEN_PROBE_SAMPLE),
-            tried: []
+            tried: [],
+            skipped: false,
+            skipReason: ''
         };
         if (!baseUrl || !apiKey || !modelId || typeof requestJson !== 'function' || typeof buildApiEndpoint !== 'function') {
+            result.probeMode = 'passive_usage';
             return result;
         }
+
+        const withinCooldown = !force
+            && Number(lastProbedAt) > 0
+            && Number.isFinite(Number(now))
+            && (Number(now) - Number(lastProbedAt)) < Math.max(0, Number(cooldownMs) || 0);
+
+        if (withinCooldown && previousProbeMode === 'passive_usage') {
+            result.skipped = true;
+            result.skipReason = 'cooldown_passive';
+            return result;
+        }
+
+        if (gatewayActive) {
+            result.probeMode = 'passive_usage';
+            result.skipped = true;
+            result.skipReason = 'gateway_whitelist';
+            return result;
+        }
+
+        // 探测请求始终不携带对话 sessionId，确保与聊天会话亲和性/缓存完全隔离。
         const safePostOrGet = async (label, opts) => {
             try {
-                const data = await requestJson({ apiKey, sessionId, timeoutMs: 8000, ...opts });
+                const data = await requestJson({ apiKey, sessionId: '', timeoutMs: 8000, ...opts });
                 result.tried.push({ label, ok: true });
                 return data;
             } catch (error) {
@@ -1232,61 +1316,76 @@
             }
         };
 
-        // 1. 免计费单模型详情探测：部分中转只在 GET /models/{id} 返回 context_length
         const modelsBase = buildApiEndpoint(baseUrl, 'models').replace(/\/+$/, '');
-        const detail = await safePostOrGet('models_detail', {
-            url: `${modelsBase}/${encodeURIComponent(modelId)}`,
-            method: 'GET'
-        });
-        const detectedLimit = extractModelContextLimit(detail);
-        if (detectedLimit) result.contextLimit = detectedLimit;
-
-        // 2. 多协议零生成成本 Token 计数探测：哪个通就用哪个
-        const responsesEndpoint = buildApiEndpoint(baseUrl, 'responses').replace(/\/+$/, '');
-        const responsesCount = await safePostOrGet('responses_input_tokens', {
-            url: `${responsesEndpoint}/input_tokens`,
-            method: 'POST',
-            body: { model: modelId, input: TOKEN_PROBE_SAMPLE }
-        });
-        const respTokens = Number(responsesCount?.input_tokens ?? responsesCount?.total_tokens);
-        if (Number.isFinite(respTokens) && respTokens > 0) {
-            result.probeMode = 'responses_input_tokens';
-            result.calibratedInputTokens = Math.round(respTokens);
-            return result;
+        // 1. 免计费单模型详情探测：仅当尚无已知上下文上限或强制重测时请求
+        if (force || !result.contextLimit) {
+            const detail = await safePostOrGet('models_detail', {
+                url: `${modelsBase}/${encodeURIComponent(modelId)}`,
+                method: 'GET'
+            });
+            const detectedLimit = extractModelContextLimit(detail);
+            if (detectedLimit) result.contextLimit = detectedLimit;
         }
 
-        const messagesEndpoint = buildApiEndpoint(baseUrl, 'messages').replace(/\/+$/, '');
-        const anthropicCount = await safePostOrGet('anthropic_count_tokens', {
-            url: `${messagesEndpoint}/count_tokens`,
-            method: 'POST',
-            body: { model: modelId, messages: [{ role: 'user', content: TOKEN_PROBE_SAMPLE }] }
-        });
-        const antTokens = Number(anthropicCount?.input_tokens ?? anthropicCount?.total_tokens);
-        if (Number.isFinite(antTokens) && antTokens > 0) {
-            result.probeMode = 'anthropic_count_tokens';
-            result.calibratedInputTokens = Math.round(antTokens);
-            return result;
-        }
+        // 2. 多协议零生成成本 Token 计数探测：24h 内已命中过具体协议时仅直连复测该端点
+        const rememberedDirect = withinCooldown
+            && ['responses_input_tokens', 'anthropic_count_tokens', 'gemini_count_tokens'].includes(previousProbeMode);
+        const candidates = rememberedDirect
+            ? [previousProbeMode]
+            : orderTokenizerProbeCandidates({ chatProtocol, baseUrl, modelId });
 
-        const geminiCount = await safePostOrGet('gemini_count_tokens', {
-            url: `${modelsBase}/${encodeURIComponent(modelId)}:countTokens`,
-            method: 'POST',
-            body: { contents: [{ role: 'user', parts: [{ text: TOKEN_PROBE_SAMPLE }] }] }
-        });
-        const gemTokens = Number(geminiCount?.totalTokens ?? geminiCount?.total_tokens);
-        if (Number.isFinite(gemTokens) && gemTokens > 0) {
-            result.probeMode = 'gemini_count_tokens';
-            result.calibratedInputTokens = Math.round(gemTokens);
-            return result;
+        result.probeMode = 'passive_usage';
+        for (const candidate of candidates) {
+            if (candidate === 'responses_input_tokens') {
+                const responsesEndpoint = buildApiEndpoint(baseUrl, 'responses').replace(/\/+$/, '');
+                const responsesCount = await safePostOrGet('responses_input_tokens', {
+                    url: `${responsesEndpoint}/input_tokens`,
+                    method: 'POST',
+                    body: { model: modelId, input: TOKEN_PROBE_SAMPLE }
+                });
+                const respTokens = Number(responsesCount?.input_tokens ?? responsesCount?.total_tokens);
+                if (Number.isFinite(respTokens) && respTokens > 0) {
+                    result.probeMode = 'responses_input_tokens';
+                    result.calibratedInputTokens = Math.round(respTokens);
+                    return result;
+                }
+            } else if (candidate === 'anthropic_count_tokens') {
+                const messagesEndpoint = buildApiEndpoint(baseUrl, 'messages').replace(/\/+$/, '');
+                const anthropicCount = await safePostOrGet('anthropic_count_tokens', {
+                    url: `${messagesEndpoint}/count_tokens`,
+                    method: 'POST',
+                    body: { model: modelId, messages: [{ role: 'user', content: TOKEN_PROBE_SAMPLE }] }
+                });
+                const antTokens = Number(anthropicCount?.input_tokens ?? anthropicCount?.total_tokens);
+                if (Number.isFinite(antTokens) && antTokens > 0) {
+                    result.probeMode = 'anthropic_count_tokens';
+                    result.calibratedInputTokens = Math.round(antTokens);
+                    return result;
+                }
+            } else if (candidate === 'gemini_count_tokens') {
+                const geminiCount = await safePostOrGet('gemini_count_tokens', {
+                    url: `${modelsBase}/${encodeURIComponent(modelId)}:countTokens`,
+                    method: 'POST',
+                    body: { contents: [{ role: 'user', parts: [{ text: TOKEN_PROBE_SAMPLE }] }] }
+                });
+                const gemTokens = Number(geminiCount?.totalTokens ?? geminiCount?.total_tokens);
+                if (Number.isFinite(gemTokens) && gemTokens > 0) {
+                    result.probeMode = 'gemini_count_tokens';
+                    result.calibratedInputTokens = Math.round(gemTokens);
+                    return result;
+                }
+            }
         }
 
         return result;
     };
 
     window.RPHubContextUtils = {
+        HARD_CAP_HYSTERESIS_RATIO,
         MIN_PROTECTED_RAW_FLOORS,
         MODEL_CONTEXT_LIMIT_PRESETS,
         MODEL_SWEET_SPOT_RATIO_PRESETS,
+        TOKEN_PROBE_COOLDOWN_MS,
         appendEnhancedMemoryRecall,
         buildContextViewerState,
         buildConversationTurnSnapshot,

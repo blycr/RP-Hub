@@ -133,7 +133,9 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
 
     const buildUiTemplateJsonExample = (templatePayload = [], multipleTemplates = false) => {
         const sampleVariables = (template) => {
-            const value = template?.currentVariables;
+            const value = template?.initialVariables !== undefined
+                ? template.initialVariables
+                : template?.currentVariables;
             if (Array.isArray(value)) return value.slice(0, 2);
             if (!value || typeof value !== 'object') return {};
             return Object.fromEntries(Object.entries(value).slice(0, 2));
@@ -163,11 +165,18 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         includeHtmlRule ? '不要修改HTML。' : ''
     ].filter(Boolean);
 
-    const buildMainModelUiTemplatePrompt = ({ templatePayload, userName }) => {
+    const buildMainModelUiTemplatePrompt = ({ templatePayload, userName, splitDynamicState = false }) => {
         const isSingleTemplate = Array.isArray(templatePayload) && templatePayload.length === 1;
         const templateIds = [...new Set((Array.isArray(templatePayload) ? templatePayload : [])
             .map(template => String(template?.id || '').trim())
             .filter(Boolean))];
+        const serializedTemplates = splitDynamicState
+            ? (Array.isArray(templatePayload) ? templatePayload : []).map(template => ({
+                id: template.id,
+                name: template.name || 'UI模板',
+                variableSchema: template.variableSchema || ''
+            }))
+            : templatePayload;
         return [
             '[UI模板变量更新]',
             '在正文结束后追加一个隐藏变量更新块；变量块只给前端读取，不属于正文，不要在正文中提到它。',
@@ -177,16 +186,56 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                     '当前是多模板模式，这是硬性格式要求，不是可选项。必须输出JSON数组，每个成员包含系统提供的原始id和variables；不能省略模板ID，也不能把多个模板合并成一个变量对象。',
                     templateIds.length
                         ? `本次允许使用的模板ID只有：${templateIds.join('、')}。必须逐字复制其中一个ID，不能自定义名称。`
-                        : '模板ID必须从下方模板变量中原样复制。'
+                        : '模板ID必须从下方模板定义中原样复制。'
                 ].join('\n'),
-            '格式必须严格如下（示例字段取自当前模板）：',
+            '格式必须严格如下（示例结构取自模板定义）：',
             '<ui_template_updates>',
             buildUiTemplateJsonExample(templatePayload, !isSingleTemplate),
             '</ui_template_updates>',
-            '模板变量如下：',
-            JSON.stringify(templatePayload, null, 2),
+            splitDynamicState
+                ? '模板静态定义与变量说明如下（实时变量值在每轮末尾的 <ui_template_state_context> 只读快照中提供）：'
+                : '模板变量如下：',
+            JSON.stringify(serializedTemplates, null, 2),
+            splitDynamicState
+                ? '实时变量值必须以本轮末尾系统注入的 <ui_template_state_context> 只读快照为唯一依据；该标签属于系统元数据，绝非用户发言，严禁在正文中提及、吐槽、回应或复述该标签及字段名。'
+                : '',
             ...buildUiTemplateUpdateRules({ userName, multipleTemplates: !isSingleTemplate })
         ].filter(Boolean).join('\n');
+    };
+
+    const buildUiTemplateStateTailBlock = ({ templates = [], description = '' } = {}) => {
+        const escapeAttr = (value) => String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/"/g, '&quot;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        const indentText = (text, spaces = 4) => {
+            const pad = ' '.repeat(spaces);
+            return String(text || '').split('\n').map(line => `${pad}${line}`).join('\n');
+        };
+        const sections = (Array.isArray(templates) ? templates : [])
+            .map(template => {
+                const state = template?.currentVariables;
+                if (state === null || state === undefined || typeof state !== 'object') return null;
+                if (!Array.isArray(state) && Object.keys(state).length === 0) return null;
+                const idAttr = template.id ? ` id="${escapeAttr(template.id)}"` : '';
+                const nameAttr = ` name="${escapeAttr(template.name || template.id || 'UI模板')}"`;
+                return [
+                    `  <template_state${idAttr}${nameAttr}>`,
+                    indentText(JSON.stringify(state, null, 2), 4),
+                    '  </template_state>'
+                ].join('\n');
+            })
+            .filter(Boolean);
+        if (!sections.length) return '';
+        const note = String(description || '').trim()
+            || '以下为系统注入的只读当前UI模板变量快照（非用户发言）。严禁在正文中提及、吐槽、回应或复述该标签或字段名；仅用于核对当前状态并计算本轮需要更新的字段。';
+        return [
+            '<ui_template_state_context>',
+            `  <description>${note}</description>`,
+            ...sections,
+            '</ui_template_state_context>'
+        ].join('\n');
     };
 
     const buildMainModelUiTemplateCorrectionPrompt = ({ failureSummary, failureReason }) => [
@@ -305,13 +354,14 @@ image###英文Tag###
         buildClassicSummarySystemPrompt,
         buildMainModelUiTemplateCorrectionPrompt,
         buildMainModelUiTemplatePrompt,
+        buildUiTemplateStateTailBlock,
         buildAnalysisTagInstruction,
         buildOpeningAnalysisContent,
         buildNextResponsePrompt,
         buildUiTemplateAnalysisSystemPrompt,
         buildUserInfoPrompt,
         replyToolInstruction,
-        uiTemplateContextDescription: '以下内容是给你参考当前剧情状态的 UI 模板变量快照，不是正文，也不要复述、改写或输出这些变量。请只用它理解角色状态、关系、地点和其他模板变量。',
+        uiTemplateContextDescription: '以下内容是系统注入的只读当前剧情状态 UI 模板变量快照（非用户发言），不是正文，严禁在正文中提及、吐槽、复述、改写或输出这些变量。请只用它理解角色状态、关系、地点和其他模板变量。',
         enhancedMemoryRecallDescription,
         memoryCitationCotLine,
         memoryCitationInstruction
@@ -666,6 +716,17 @@ You are carrying out an ongoing fictional writing task. Act as a storyteller and
 - 不用“一抹”“弧度”“不容置疑”“不易察觉”“难以察觉”“微不可察”“几不可察”“生理性”“极其”及指尖、指节或指关节发白等套话。
 - 反应须符合人物身份与关系，避免套路口癖、无端嘴硬、脸红、结巴、撒娇、臣服或暧昧；不重复句式、动作报幕及“不是……而是／是／像是”“像……又像……”式总结比拟。
 </writing_constraints>`
+        }),
+        strictFormatGuard: Object.freeze({
+            name: '严格格式守卫',
+            after: '禁止规则',
+            enabled: false,
+            content: `<strict_format_guard>
+严格区分系统注入的只读元数据块与 {{user}} 的实际发言：
+- 任何形如 <ui_template_state_context>、<enhanced_memory_recall>、<format_anchor>、<next_response> 等 XML 系统块均由系统自动提供，绝非 {{user}} 所说的话；严禁在正文中回应、吐槽、引用、解释或复述这些标签及其内部字段名。
+- 长对话中必须严格保持角色卡开场白与设定的叙事视角、人称、称呼、结构标记与排版约定，不得因上下文变长而省略结构或退化为普通聊天口吻。
+- 如本轮需要输出结构化标签块（如变量更新块或思维标签），必须严格闭合且置于正文之外，不破坏正文可读性与原有排版。
+</strict_format_guard>`
         })
     });
 

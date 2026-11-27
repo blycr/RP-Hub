@@ -1983,6 +1983,7 @@ const app = createApp({
         });
         const showContextBudgetPanel = ref(false);
         const isProbingModelContext = ref(false);
+        const hardCapCutAnchorByScope = new Map();
         const customHardLimitInput = ref('');
         const customSweetSpotInput = ref('');
 
@@ -1993,7 +1994,7 @@ const app = createApp({
             passive_usage: 'usage 自动校准'
         }[mode] || 'usage 自动校准');
 
-        const calibrateModelTokenEstimator = (providerId, modelId, estimatedBaseTokens, actualInputTokens, probeMode = null) => {
+        const calibrateModelTokenEstimator = (providerId, modelId, estimatedBaseTokens, actualInputTokens, probeMode = null, lastProbedAt = null) => {
             const key = buildModelBudgetKey(providerId, modelId);
             if (!modelId || !Number.isFinite(actualInputTokens) || actualInputTokens <= 0) return;
             const currentMap = settings.modelTokenCalibrations && typeof settings.modelTokenCalibrations === 'object'
@@ -2002,11 +2003,13 @@ const app = createApp({
             const prev = currentMap[key] || null;
             const updated = updateTokenCalibration(prev, { estimatedBaseTokens, actualInputTokens });
             if (!updated) return;
+            const nextProbedAt = Number(lastProbedAt) > 0 ? Number(lastProbedAt) : (Number(prev?.lastProbedAt) || 0);
             settings.modelTokenCalibrations = {
                 ...currentMap,
                 [key]: {
                     ...updated,
-                    probeMode: probeMode || prev?.probeMode || 'passive_usage'
+                    probeMode: probeMode || prev?.probeMode || 'passive_usage',
+                    ...(nextProbedAt > 0 ? { lastProbedAt: nextProbedAt } : {})
                 }
             };
             saveData({ saveMemories: false, saveCharacters: false });
@@ -2212,8 +2215,9 @@ const app = createApp({
             showToast('已恢复模型默认上下文配置', 'info');
         };
 
-        const probeCurrentModelContext = async () => {
+        const probeCurrentModelContext = async (options = {}) => {
             if (isProbingModelContext.value) return;
+            const force = Boolean(options && typeof options === 'object' && options.force === true);
             const modelId = String(settings.model || '').trim();
             if (!modelId) {
                 showToast('请先选择模型再探测', 'warning');
@@ -2227,21 +2231,38 @@ const app = createApp({
                 showToast(error.message || '当前供应商未配置完整', 'error');
                 return;
             }
+            const budgetKey = buildModelBudgetKey(providerId, modelId);
+            const matched = availableModels.value.find(m => m && m.id === modelId && m.providerId === providerId);
+            const existingCalibration = settings.modelTokenCalibrations?.[budgetKey] || null;
+            const gatewayActive = Boolean(window.RPHubApiClient?.getGatewayConfig?.()?.enabled);
             isProbingModelContext.value = true;
             try {
+                const probedAt = Date.now();
                 const probe = await probeModelContextAndTokenizer({
                     baseUrl: config.apiUrl,
                     apiKey: config.apiKey,
                     modelId,
-                    sessionId: getCurrentStoryBranchScopeId(),
+                    chatProtocol: config.chatProtocol || '',
+                    previousProbeMode: existingCalibration?.probeMode || '',
+                    lastProbedAt: Number(existingCalibration?.lastProbedAt) || 0,
+                    knownContextLimit: extractModelContextLimit(matched),
+                    force,
+                    gatewayActive,
+                    now: probedAt,
                     requestJson,
                     buildApiEndpoint
                 });
+                if (probe.skipped) {
+                    if (probe.skipReason === 'gateway_whitelist') {
+                        showToast('当前启用了网关白名单模式，免计费计数子路径已跳过，将沿用对话 usage 自动校准', 'info', 4000);
+                    } else {
+                        showToast(`24 小时内已探测（沿用${getProbeModeLabel(probe.probeMode)}），点击「重测」可强制刷新`, 'info', 3800);
+                    }
+                    return;
+                }
                 const notes = [];
                 if (probe.contextLimit) {
-                    const matched = availableModels.value.find(m => m && m.id === modelId && m.providerId === providerId);
                     if (matched) matched.context_length = probe.contextLimit;
-                    const budgetKey = buildModelBudgetKey(providerId, modelId);
                     const hasManualHard = Boolean(settings.modelContextBudgets?.[budgetKey]?.hardLimit);
                     if (!hasManualHard) {
                         updateCurrentModelContextBudget({ hardLimit: probe.contextLimit });
@@ -2254,22 +2275,27 @@ const app = createApp({
                         modelId,
                         probe.sampleBaseTokens,
                         probe.calibratedInputTokens,
-                        probe.probeMode
+                        probe.probeMode,
+                        probedAt
                     );
                     notes.push(`${getProbeModeLabel(probe.probeMode)}已校准`);
                 } else {
-                    const key = buildModelBudgetKey(providerId, modelId);
                     const currentMap = settings.modelTokenCalibrations && typeof settings.modelTokenCalibrations === 'object'
                         ? settings.modelTokenCalibrations
                         : {};
-                    if (currentMap[key]) {
-                        settings.modelTokenCalibrations = {
-                            ...currentMap,
-                            [key]: { ...currentMap[key], probeMode: 'passive_usage' }
-                        };
-                        saveData({ saveMemories: false, saveCharacters: false });
-                    }
-                    notes.push('无免计费计数端点，将沿用对话 usage 自动校准');
+                    const prev = currentMap[budgetKey] && typeof currentMap[budgetKey] === 'object'
+                        ? currentMap[budgetKey]
+                        : { factor: 1, samples: 0, updatedAt: probedAt };
+                    settings.modelTokenCalibrations = {
+                        ...currentMap,
+                        [budgetKey]: {
+                            ...prev,
+                            probeMode: 'passive_usage',
+                            lastProbedAt: probedAt
+                        }
+                    };
+                    saveData({ saveMemories: false, saveCharacters: false });
+                    notes.push('无免计费计数端点，24 小时内不再重复探测，将沿用对话 usage 自动校准');
                 }
                 showToast(`探测完成：${notes.join(' · ')}`, probe.calibratedInputTokens || probe.contextLimit ? 'success' : 'info', 4000);
             } catch (error) {
@@ -3372,17 +3398,36 @@ const app = createApp({
             const templates = activeUiTemplates.value;
             if (!templates.length) return '';
 
+            // 动静分离：顶部 system 仅放跨轮不变的模板 ID、schema 与基于初始变量的结构示例，
+            // 实时变量值改由尾部 <ui_template_state_context> 注入，避免每轮变量变动击穿整条前缀 KV 缓存。
             const templatePayload = templates.map(template => ({
                 id: template.id,
                 name: template.name || 'UI模板',
-                currentVariables: template.variableState || {},
+                initialVariables: inferInitialUiTemplateState(template),
                 variableSchema: template.variableSchema || ''
             }));
 
             return replaceUserNamePlaceholder(BUILTIN_PROMPTS.buildMainModelUiTemplatePrompt({
                 templatePayload,
-                userName: user.name
+                userName: user.name,
+                splitDynamicState: true
             }));
+        };
+
+        const buildUiTemplateDynamicTailBlock = () => {
+            if (!settings.uiTemplateEnabled) return '';
+            if (settings.uiTemplateMainModelAnalysis) {
+                const templates = activeUiTemplates.value;
+                if (!templates.length) return '';
+                return replaceUserNamePlaceholder(BUILTIN_PROMPTS.buildUiTemplateStateTailBlock({
+                    templates: templates.map(template => ({
+                        id: template.id,
+                        name: template.name || 'UI模板',
+                        currentVariables: template.variableState || {}
+                    }))
+                }));
+            }
+            return buildUiTemplateContextSystemPrompt();
         };
 
         const applyMainModelUiTemplateUpdates = (targetMessage, model = settings.model, { silent = false } = {}) => {
@@ -5422,6 +5467,24 @@ const app = createApp({
         const wrapAnalysis = (tag, text) => text
             ? `<${tag}>\n${text.replace(/<\s*\/?\s*(?:thinking|think|cot)\s*>/gi, '')}\n</${tag}>\n`
             : '';
+        const appendUiTemplateStateTailBlock = (messageList, stateBlock) => {
+            const trimmed = String(stateBlock || '').trim();
+            if (!trimmed || !Array.isArray(messageList) || !messageList.length) return;
+            const target = [...messageList].reverse().find(message => (
+                message?.role === 'user'
+                && Array.isArray(message._sourceIndexes)
+                && message._sourceIndexes.length > 0
+            ));
+            if (target) {
+                target.content = `${String(target.content || '').trimEnd()}\n\n${trimmed}`;
+                return;
+            }
+            // 极端分支（例如 0 条 user 消息的纯开场续写）安全兜底回退到顶部 system，绝不静默丢弃快照也不插入非法尾部 system。
+            if (messageList[0]?.role === 'system') {
+                messageList[0].content = `${String(messageList[0].content || '').trimEnd()}\n\n${trimmed}`;
+            }
+        };
+
         const appendNextResponsePrompt = (messageList, { cotEnabled = false, formatAnchor = '', useThinkingTag = false, writingStylePrompt = '' } = {}) => {
             const target = [...messageList].reverse().find(message => (
                 message?.role === 'user'
@@ -5580,9 +5643,6 @@ const app = createApp({
             const activeToolPrompt = buildActiveToolSystemPrompt(requestTools);
             if (activeToolPrompt) systemPromptParts.push(activeToolPrompt);
             else if (activeToolDepth > 0) systemPromptParts.push('本轮工具调用已结束，请依据已有结果完成回复，不再调用工具；无法确认的信息明确说明。');
-
-            const uiTemplateContextPrompt = buildUiTemplateContextSystemPrompt();
-            if (uiTemplateContextPrompt) systemPromptParts.push(uiTemplateContextPrompt);
 
             const mainModelUiTemplatePrompt = buildMainModelUiTemplateUpdatePrompt();
             if (mainModelUiTemplatePrompt) systemPromptParts.push(mainModelUiTemplatePrompt);
@@ -5822,6 +5882,7 @@ const app = createApp({
                 .filter(m => String(m.content || '').trim())
             );
             appendPendingUiTemplateCorrection(messages);
+            appendUiTemplateStateTailBlock(messages, buildUiTemplateDynamicTailBlock());
             const proximalFormatAnchor = buildProximalFormatAnchor({
                 character: currentCharacter.value,
                 regexScripts: regexScripts.value,
@@ -5858,16 +5919,39 @@ const app = createApp({
                 })
             }));
 
-            // 红线保护降载：仅在逼近模型安全红线时省略最早中段历史，永不裁切设定与最近保底轮次
+            // 红线滞回批裁剪：仅在超 100% 安全上限时一次性回落到 85% 并锁定本分支单调锚点，
+            // 留出约 15% 增长余量维持前缀 KV 缓存命中；历史回档或切更大上限模型时自动重置锚点。
+            const activeBudget = currentModelContextBudget.value;
+            const hardCapScopeKey = `${getCurrentStoryBranchScopeId() || 'default'}::${activeBudget.key}::${activeBudget.hardCapTokens}`;
+            const savedAnchor = hardCapCutAnchorByScope.get(hardCapScopeKey);
+            let previousCutAnchorFloor = 0;
+            if (savedAnchor) {
+                if (chatHistory.value.length < savedAnchor.historyLength) {
+                    hardCapCutAnchorByScope.delete(hardCapScopeKey);
+                } else {
+                    previousCutAnchorFloor = savedAnchor.anchorFloor;
+                }
+            }
             const hardCapResult = enforceHardCapOnMessages({
                 messages,
                 safePrefixCount: safeTargetLimit,
-                budget: currentModelContextBudget.value,
-                calibration: currentModelTokenCalibration.value
+                budget: activeBudget,
+                calibration: currentModelTokenCalibration.value,
+                previousCutAnchorFloor
             });
             if (hardCapResult.trimmedCount > 0) {
                 messages = hardCapResult.messages;
-                showToast(`已触发上下文红线保护：自动省略较早的 ${hardCapResult.trimmedCount} 条历史以防接口超限`, 'warning', 4500);
+                if (hardCapResult.nextCutAnchorFloor > 0) {
+                    hardCapCutAnchorByScope.set(hardCapScopeKey, {
+                        anchorFloor: hardCapResult.nextCutAnchorFloor,
+                        historyLength: chatHistory.value.length
+                    });
+                }
+                if (hardCapResult.advancedBatch) {
+                    showToast(`已触发上下文红线批裁剪：省略较早的 ${hardCapResult.trimmedCount} 条历史并预留约 15% 缓存缓冲空间`, 'warning', 4500);
+                }
+            } else if (savedAnchor) {
+                hardCapCutAnchorByScope.delete(hardCapScopeKey);
             }
 
             let generatedAssistantMessageId = null;
@@ -9137,6 +9221,9 @@ const app = createApp({
 
             // 1.9 Enforce Default Preset (禁止规则)
             syncBuiltinPreset(BUILTIN_PRESETS.prohibited);
+
+            // 1.9.5 Optional Preset (严格格式守卫，默认关闭，面向弱指令遵循模型按需开启)
+            syncBuiltinPreset(BUILTIN_PRESETS.strictFormatGuard);
 
             // 1.10 Enforce Default Preset (COT)
             const cotPresetName = 'COT';
