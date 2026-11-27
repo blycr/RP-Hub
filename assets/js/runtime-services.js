@@ -198,6 +198,60 @@
         const protectCitations = text => text.replace(/\[M(\d{1,6})\]/g, '\uE000M$1\uE001');
         const restoreCitations = text => text.replace(/\uE000M(\d{1,6})\uE001/g, '[M$1]');
 
+        const renderLeadingHtmlDocument = (processed, role) => {
+            const sanitized = DOMPurify.sanitize(processed, cleanConfig);
+            try {
+                const documentNode = new DOMParser().parseFromString(sanitized, 'text/html');
+                const body = documentNode.body;
+                const isInlineNode = node => node && (
+                    node.nodeType === 3 || (node.nodeType === 1 && !BLOCK_TAG_PATTERN.test(node.tagName))
+                );
+                const inlineRuns = [];
+                let currentRun = [];
+                [...body.childNodes].forEach(node => {
+                    if (isInlineNode(node)) {
+                        currentRun.push(node);
+                    } else if (currentRun.length) {
+                        inlineRuns.push(currentRun);
+                        currentRun = [];
+                    }
+                });
+                if (currentRun.length) inlineRuns.push(currentRun);
+
+                let convertedMarkdown = false;
+                inlineRuns.forEach(run => {
+                    const hasVisibleText = run.some(node => (
+                        node.nodeType === 3
+                            ? /\S/.test(node.nodeValue || '')
+                            : /\S/.test(node.textContent || '') || node.tagName === 'IMG'
+                    ));
+                    if (!hasVisibleText) return;
+                    const runMarkdown = run.map(node => (
+                        node.nodeType === 3
+                            ? String(node.nodeValue || '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                            : node.outerHTML
+                    )).join('').trim();
+                    if (!runMarkdown) return;
+                    const parsedRun = new DOMParser().parseFromString(sanitizeMarkdown(runMarkdown), 'text/html');
+                    const fragment = documentNode.createDocumentFragment();
+                    [...parsedRun.body.childNodes].forEach(child => fragment.appendChild(documentNode.importNode(child, true)));
+                    run[0].before(fragment);
+                    run.forEach(node => node.remove());
+                    convertedMarkdown = true;
+                });
+
+                const panelsChanged = convertedMarkdown && replaceScriptedPanels(documentNode);
+                const citationsChanged = role === 'assistant' && /\[M\d/.test(documentNode.body.innerHTML)
+                    && decorateMemoryCitations(documentNode);
+                if (convertedMarkdown || panelsChanged || citationsChanged) {
+                    return documentNode.body.innerHTML;
+                }
+            } catch (error) {
+                console.error('Error rendering mixed HTML/Markdown message:', error);
+            }
+            return decorateHtml(sanitized, role);
+        };
+
         const renderMarkdown = (text, role = 'assistant', skipRegex = false, allowHtml = true) => {
             if (!text) return '';
             // 记忆的轮次会随删改楼层变化，带引用的回复按当前对照表缓存，轮次变了角标跟着更新。
@@ -240,7 +294,7 @@
 
             if (/^\s*<(div|table|section|article|aside|header|footer|style|script)/i.test(trimmed)
                 && !trimmed.includes('```')) {
-                return cacheValue(renderedCache, cacheKey, decorateHtml(DOMPurify.sanitize(processed, cleanConfig), role));
+                return cacheValue(renderedCache, cacheKey, renderLeadingHtmlDocument(processed, role));
             }
 
             const lowerTrimmed = trimmed.toLowerCase();

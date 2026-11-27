@@ -6,6 +6,23 @@
 
 ---
 
+## [2.0.6-custom.3] - 2026-11-27
+
+### 概述（Overview）
+彻底修复隐藏态导入后 UI 模板 iframe 在移动端（尤其是 Firefox）塌陷或高度锁死、刷新/开启开关后开场白未补挂模板，以及正文开头 HTML 块与文风过滤导致的偶发性正文掉格式问题。
+
+### 新增（Added）
+- 新增 `tests/card-rendering.test.js`，覆盖 Firefox 隐藏态 `getComputedStyle === null` 测高恢复、`srcdoc` 人设名转义、文风过滤 Markdown 标记保护及会话恢复/视图切换生命周期回归。
+
+### 修复（Fixed）
+- 修复可执行 HTML / UI 模板 iframe 在 `display: none` 隐藏态下 `getComputedStyle()` 返回 `null` 抛错导致 `isUpdating` 永久锁死、以及 `<head>` 同步执行时 `document.body` 尚未创建导致 `ResizeObserver` 从未绑定的问题；新增隐藏态跳过、异常保护、`DOMContentLoaded` 补绑 `ResizeObserver`/`IntersectionObserver` 与切回 `chat` 视图强制重测高度。
+- 修复刷新页面恢复会话（`onMounted`）或后续开启「变量 UI 模板」开关时未对开场白补挂初始 UI 模板面板的问题。
+- 修复 `index.html` 直接对已序列化的 `<iframe srcdoc="...">` 执行原始 `{{user}}` 替换在人设名含引号或尖括号时破坏属性的问题（改用 `replaceUserNamePlaceholderInHtml` 进行双层安全转义）。
+- 修复 `renderMarkdown` 在消息以 `<div>`/`<style>` 等 HTML 块标签开头且不含代码块围栏时整条跳过 Markdown 解析、导致后续正文段落与 Markdown 格式全部丢失的问题，改为仅对顶层裸文本/行内片段执行 Markdown 解析，同时保持纯 HTML 卡片原样不变。
+- 修复 `filterBlockedStyleText` 删除命中句子/词组时吞掉行首 Markdown 块级前缀（`>`、`#`、列表符）或破坏成对加粗/删除线标记（`**`、`__`、`~~`）的问题。
+
+---
+
 ## [2.0.6-custom.2] - 2026-11-25
 
 ### 概述（Overview）

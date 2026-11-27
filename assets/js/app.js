@@ -562,6 +562,23 @@ const app = createApp({
         });
         const replaceUserNamePlaceholder = (value) => String(value ?? '')
             .replace(/\{\{\s*user\s*\}\}/gi, () => String(user.name || '').trim());
+        const escapeHtmlEntities = (value) => String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        const replaceUserNamePlaceholderInHtml = (html) => {
+            const source = String(html ?? '');
+            if (!/\{\{\s*user\s*\}\}/i.test(source)) return source;
+            const escapedName = escapeHtmlEntities(String(user.name || '').trim());
+            const srcdocEscapedName = escapeHtmlEntities(escapedName);
+            return source
+                .replace(/(srcdoc\s*=\s*")([^"]*)(")/gi, (_, open, body, close) => (
+                    open + body.replace(/\{\{\s*user\s*\}\}/gi, () => srcdocEscapedName) + close
+                ))
+                .replace(/\{\{\s*user\s*\}\}/gi, () => escapedName);
+        };
         const buildUserInfoPrompt = () => BUILTIN_PROMPTS.buildUserInfoPrompt(user);
         const getCurrentCharacterPrompt = () => BUILTIN_PROMPTS.buildCharacterPrompt(currentCharacter.value);
 
@@ -1545,6 +1562,19 @@ const app = createApp({
             if (lastIndex < text.length) segments.push({ text: text.slice(lastIndex), matched: false });
             return segments.length ? segments : [{ text, matched: false }];
         };
+        const markdownBlockPrefixPattern = /^[ \t]*(?:>+[ \t]*|#{1,6}[ \t]+|[-*+][ \t]+|\d+[.)][ \t]+)/;
+        const preserveMarkdownTokensOnRemoval = (removedText) => {
+            const text = String(removedText || '');
+            const prefixMatch = text.match(markdownBlockPrefixPattern);
+            const blockPrefix = prefixMatch ? prefixMatch[0] : '';
+            const body = text.slice(blockPrefix.length);
+            let preserved = blockPrefix;
+            for (const marker of ['**', '__', '~~']) {
+                const count = body.split(marker).length - 1;
+                if (count % 2 === 1) preserved += marker;
+            }
+            return preserved;
+        };
         const filterBlockedStyleText = (text, { log = false, collect = null } = {}) => {
             const source = String(text || '');
             if (!settings.styleFilterEnabled) return source;
@@ -1556,13 +1586,25 @@ const app = createApp({
                 .split(quotedDialoguePattern)
                 .map((fragment, index) => index % 2 ? fragment : fragment
                     .replace(standaloneWordCountSentencePattern, (match, prefix = '') => {
-                        removedFragments.push(match.slice(prefix.length).trim());
-                        return prefix;
+                        const removed = match.slice(prefix.length);
+                        removedFragments.push(removed.trim());
+                        return prefix + preserveMarkdownTokensOnRemoval(removed);
                     })
-                    .replace(blockedStyleSentencePattern, match => { removedFragments.push(match.trim()); return ''; })
-                    .replace(paleFingerClausePattern, match => { removedFragments.push(match.trim()); return ''; })
-                    .replace(blockedStyleClausePattern, match => { removedFragments.push(match.trim()); return ''; })
+                    .replace(blockedStyleSentencePattern, match => {
+                        removedFragments.push(match.trim());
+                        return preserveMarkdownTokensOnRemoval(match);
+                    })
+                    .replace(paleFingerClausePattern, match => {
+                        removedFragments.push(match.trim());
+                        return preserveMarkdownTokensOnRemoval(match);
+                    })
+                    .replace(blockedStyleClausePattern, match => {
+                        removedFragments.push(match.trim());
+                        return preserveMarkdownTokensOnRemoval(match);
+                    })
                     .replace(blockedStyleWordPattern, match => { removedFragments.push(match); return ''; })
+                    .replace(/\*\*[ \t]*\*\*|__[ \t]*__|~~[ \t]*~~/g, '')
+                    .replace(/^[ \t]*(?:>+|[-*+])[ \t]*$/gm, '')
                     .replace(/^[ \t]*[，,；;]+/gm, '')
                     .replace(/[，,；;]{2,}/g, marks => marks.at(-1))
                     .replace(/[，,；;]+([。！？!?])/g, '$1')
@@ -2050,12 +2092,32 @@ const app = createApp({
             });
         };
 
+        const refreshExecutableHtmlFrames = () => {
+            nextTick(() => {
+                const run = () => {
+                    document.querySelectorAll('iframe.executable-html-frame').forEach((frame) => {
+                        try {
+                            if (typeof frame.contentWindow?.__rphubUpdateHeight === 'function') {
+                                frame.contentWindow.__rphubUpdateHeight(true);
+                            }
+                        } catch (_) {
+                            // 忽略跨域或已卸载的 iframe
+                        }
+                    });
+                };
+                run();
+                setTimeout(run, 120);
+            });
+        };
+
         // Watch view change to refresh embedded pages and sortable lists
         watch(currentView, (newView) => {
             activeSortable?.destroy();
             activeSortable = null;
             settingsHelpTopic.value = '';
-            if (newView === 'characters') {
+            if (newView === 'chat') {
+                refreshExecutableHtmlFrames();
+            } else if (newView === 'characters') {
                 characterGridView.value = false;
                 isBatchDeleteMode.value = false;
                 selectedCharacterIndices.value.clear();
@@ -8671,6 +8733,13 @@ const app = createApp({
                 isTruncationEnabled,
                 () => presets.value.find(preset => preset.name === cotPresetName)?.enabled
             ], syncDynamicPresetContent);
+            watch(() => settings.uiTemplateEnabled, (enabled) => {
+                if (!enabled || _isApplyingCharacterScopedData) return;
+                if (ensureInitialUiTemplateBlocks()) {
+                    scheduleChatHistorySave();
+                    refreshExecutableHtmlFrames();
+                }
+            });
             removeLegacyUserRegex();
 
             // Save enforced defaults immediately (仅保存预设/正则等结构性数据)
@@ -8710,6 +8779,7 @@ const app = createApp({
 
                 // Load Char Specifics
                 applyCharacterScopedResources(char);
+                ensureInitialUiTemplateBlocks();
                 finishApplyingCharacterScopedData();
 
                 if (char.recentGenerationTimes) recentGenerationTimes.value = JSON.parse(JSON.stringify(char.recentGenerationTimes));
@@ -8983,7 +9053,7 @@ const app = createApp({
 
         return {
             switchProfile, createNewProfile, deleteProfile, userProfiles, activeProfileId, showProfileDropdown,
-            processMainContent, replaceUserNamePlaceholder,
+            processMainContent, replaceUserNamePlaceholder, replaceUserNamePlaceholderInHtml,
             currentView, showDescriptionPanel, showModelSelector, modelSelectionTarget, openModelSelector, manualModelProviderId, manualModelId, modelSelectorProviderOptions, manualModelProviderSelectOptions, selectManualModel, showChatModelSelector, showCharacterEditor, showAddCharacterMenu, showPresetEditor, showUiTemplateEditor,
             showActiveToolEditor,
             showExportModal, exportItems, selectedExportIndices, // Export Modal

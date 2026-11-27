@@ -1272,38 +1272,71 @@
 
                 let lastHeight = 0;
                 let isUpdating = false;
+                let observersAttached = false;
                 function updateHeight() {
                     if (!window.frameElement || isUpdating) return;
                     isUpdating = true;
                     requestAnimationFrame(function() {
-                        var body = document.body;
-                        var html = document.documentElement;
-                        if (!body || !html) {
+                        try {
+                            var frame = window.frameElement;
+                            var body = document.body;
+                            var html = document.documentElement;
+                            if (!frame || !body || !html) return;
+                            var frameRect = frame.getBoundingClientRect();
+                            if (!frameRect || frameRect.width <= 0) return;
+                            var bodyStyle = window.getComputedStyle(body);
+                            if (!bodyStyle) return;
+                            var maxBottom = 0;
+                            for (var i = 0; i < body.children.length; i++) {
+                                var child = body.children[i];
+                                if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE' || child.tagName === 'LINK') continue;
+                                var style = window.getComputedStyle(child);
+                                if (style && style.position === 'fixed') continue;
+                                var rect = child.getBoundingClientRect();
+                                var itemMax = Math.max(rect.bottom, child.offsetTop + child.offsetHeight);
+                                if (itemMax > maxBottom) maxBottom = itemMax;
+                            }
+                            var marginBottom = parseFloat(bodyStyle.marginBottom) || 0;
+                            var newHeight = Math.max(maxBottom + marginBottom, body.scrollHeight) + 4;
+                            if (newHeight > 4 && Math.abs(newHeight - lastHeight) > 0) {
+                                lastHeight = newHeight;
+                                frame.style.height = newHeight + 'px';
+                            }
+                        } catch (_) {
+                            // 隐藏态或销毁态测量异常不锁死后续重测
+                        } finally {
                             isUpdating = false;
-                            return;
                         }
-                        var maxBottom = 0;
-                        for (var i = 0; i < body.children.length; i++) {
-                            var child = body.children[i];
-                            if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE' || child.tagName === 'LINK') continue;
-                            var style = window.getComputedStyle(child);
-                            if (style.position === 'fixed') continue;
-                            var rect = child.getBoundingClientRect();
-                            var itemMax = Math.max(rect.bottom, child.offsetTop + child.offsetHeight);
-                            if (itemMax > maxBottom) maxBottom = itemMax;
-                        }
-                        var bodyStyle = window.getComputedStyle(body);
-                        var marginBottom = parseFloat(bodyStyle.marginBottom) || 0;
-                        var newHeight = Math.max(maxBottom + marginBottom, body.scrollHeight) + 4;
-                        if (Math.abs(newHeight - lastHeight) > 0) {
-                            lastHeight = newHeight;
-                            window.frameElement.style.height = newHeight + 'px';
-                        }
-                        isUpdating = false;
                     });
                 }
+                function attachObservers() {
+                    if (observersAttached || !document.body) return;
+                    observersAttached = true;
+                    if (window.ResizeObserver) {
+                        var ro = new ResizeObserver(updateHeight);
+                        ro.observe(document.documentElement);
+                        ro.observe(document.body);
+                    } else {
+                        setInterval(updateHeight, 1000);
+                    }
+                    if (window.IntersectionObserver) {
+                        var io = new IntersectionObserver(function(entries) {
+                            if (entries.some(function(entry) { return entry.isIntersecting; })) {
+                                lastHeight = 0;
+                                updateHeight();
+                            }
+                        });
+                        io.observe(document.documentElement);
+                    }
+                }
+                window.__rphubUpdateHeight = function(force) {
+                    if (force) lastHeight = 0;
+                    attachObservers();
+                    updateHeight();
+                };
 
                 window.addEventListener('load', function() {
+                    attachObservers();
                     updateHeight();
                     setTimeout(updateHeight, 200);
                     setTimeout(updateHeight, 1000);
@@ -1325,6 +1358,7 @@
                     tick();
                 });
                 window.addEventListener('DOMContentLoaded', function() {
+                    attachObservers();
                     document.querySelectorAll('img').forEach(function(img) {
                         img.addEventListener('load', updateHeight);
                     });
@@ -1341,12 +1375,7 @@
                     }
                     updateHeight();
                 });
-                if (window.ResizeObserver) {
-                    var ro = new ResizeObserver(updateHeight);
-                    if (document.body) ro.observe(document.body);
-                } else {
-                    setInterval(updateHeight, 1000);
-                }
+                attachObservers();
                 if (document.readyState === 'complete') updateHeight();
             <\/script>
         `;

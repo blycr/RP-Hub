@@ -473,7 +473,7 @@
                                                 <div v-for="(html, tIndex) in msg.uiTemplateBlocks.top"
                                                     :key="'msg-ui-top-' + index + '-' + tIndex"
                                                     class="w-full ui-template-render" @click="handleUiTemplateClick"
-                                                    v-html="replaceUserNamePlaceholder(html)"></div>
+                                                    v-html="replaceUserNamePlaceholderInHtml(html)"></div>
                                             </div>
                                             <div v-if="msg.role === 'assistant' && uiTemplateUpdateStatus.state === 'running' && uiTemplateUpdateStatus.targetMessageId === msg.id && activeUiTemplates.some(t => t.placement === 'top')"
                                                 class="ui-template-message-block ui-template-message-block-top">
@@ -510,7 +510,7 @@
                                                 <div v-for="(html, tIndex) in msg.uiTemplateBlocks.bottom"
                                                     :key="'msg-ui-bottom-' + index + '-' + tIndex"
                                                     class="w-full ui-template-render" @click="handleUiTemplateClick"
-                                                    v-html="replaceUserNamePlaceholder(html)"></div>
+                                                    v-html="replaceUserNamePlaceholderInHtml(html)"></div>
                                             </div>
                                             <div v-if="msg.role === 'assistant' && uiTemplateUpdateStatus.state === 'running' && uiTemplateUpdateStatus.targetMessageId === msg.id && activeUiTemplates.some(t => t.placement === 'bottom')"
                                                 class="ui-template-message-block ui-template-message-block-bottom">
