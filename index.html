@@ -512,6 +512,16 @@
                                                     class="w-full ui-template-render" @click="handleUiTemplateClick"
                                                     v-html="replaceUserNamePlaceholderInHtml(html)"></div>
                                             </div>
+                                            <div v-if="msg.role === 'assistant' && msg.uiTemplateAnalysisFailure && settings.uiTemplateEnabled && activeUiTemplates.length && !(uiTemplateUpdateStatus.state === 'running' && uiTemplateUpdateStatus.targetMessageId === msg.id)"
+                                                class="mx-3 mb-2 mt-1 flex items-center justify-between gap-2 rounded-lg border border-amber-200/80 bg-amber-50/90 px-3 py-1.5 text-xs text-amber-800">
+                                                <span class="truncate" :title="msg.uiTemplateAnalysisFailure.summary">本轮变量更新未完成（已保留上轮面板）</span>
+                                                <button type="button"
+                                                    @click="retryUiTemplateAnalysisForMessage(msg)"
+                                                    :disabled="isGenerating || uiTemplateUpdateStatus.state === 'running'"
+                                                    class="shrink-0 rounded-md border border-amber-300 bg-white px-2.5 py-0.5 font-semibold text-amber-700 hover:bg-amber-100 disabled:opacity-50">
+                                                    仅补算变量
+                                                </button>
+                                            </div>
                                             <div v-if="msg.role === 'assistant' && uiTemplateUpdateStatus.state === 'running' && uiTemplateUpdateStatus.targetMessageId === msg.id && activeUiTemplates.some(t => t.placement === 'bottom')"
                                                 class="ui-template-message-block ui-template-message-block-bottom">
                                                 <ui-template-pending></ui-template-pending>
@@ -553,6 +563,18 @@
                                                 viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                                     d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z">
+                                                </path>
+                                            </svg>
+                                        </button>
+                                        <button v-if="msg.role === 'assistant' && settings.uiTemplateEnabled && activeUiTemplates.length && (index === chatHistory.length - 1 || msg.uiTemplateAnalysisFailure)"
+                                            @click="retryUiTemplateAnalysisForMessage(msg)"
+                                            :disabled="isGenerating || uiTemplateUpdateStatus.state === 'running'"
+                                            class="message-action-button"
+                                            title="仅重新分析变量（不重发正文）" aria-label="仅重新分析变量">
+                                            <svg class="w-3.5 h-3.5 md:w-4 md:h-4" fill="none" stroke="currentColor"
+                                                viewBox="0 0 24 24" aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                    d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z">
                                                 </path>
                                             </svg>
                                         </button>

@@ -107,6 +107,7 @@ const {
     inferInitialUiTemplateState,
     normalizeUiTemplate,
     normalizeUiTemplateUpdateList,
+    normalizeUiTemplateUpdateListLenient,
     parseUiTemplateUpdates,
     renderUiTemplateHtml,
     sanitizeUiTemplateImportEntry,
@@ -3050,10 +3051,10 @@ const app = createApp({
             }));
         };
 
-        const applyMainModelUiTemplateUpdates = (targetMessage, model = settings.model) => {
+        const applyMainModelUiTemplateUpdates = (targetMessage, model = settings.model, { silent = false } = {}) => {
             const templates = activeUiTemplates.value;
             if (!settings.uiTemplateEnabled || !settings.uiTemplateMainModelAnalysis || !targetMessage || !templates.length) {
-                return { handled: false, changed: false };
+                return { handled: false, changed: false, failed: false };
             }
             delete targetMessage.uiTemplateAnalysisFailure;
             const recordFailure = (reason) => {
@@ -3063,9 +3064,15 @@ const app = createApp({
                     reason: summary,
                     sourceMessageId: targetMessage.id || null
                 };
-                failUiTemplateAnalysis('变量分析失败，下次请求将自动修正', targetMessage.id || null);
+                // 失败时仍沿用当前最新变量快照保底渲染面板，避免交互按钮与状态栏凭空消失
+                attachUiTemplateBlocksToLastAssistant({ targetMessageId: targetMessage.id });
+                if (silent) {
+                    markUiTemplateStatus('running', '变量补算中', templates.length, targetMessage.id || null);
+                } else {
+                    failUiTemplateAnalysis('变量分析失败（已保留上轮面板，可点击仅补算变量）', targetMessage.id || null);
+                }
                 console.warn('[UI模板] 主模型变量分析失败:', summary);
-                return { handled: true, changed: false };
+                return { handled: true, changed: false, failed: true, reason: summary };
             };
             const match = findUiTemplateUpdateBlock(targetMessage.content);
             if (!match) {
@@ -3076,10 +3083,13 @@ const app = createApp({
             }
 
             let updates = [];
+            let warnings = [];
             try {
                 const updateContent = match[1];
                 const parsed = parseUiTemplateUpdates(updateContent, templates);
-                updates = normalizeUiTemplateUpdateList(parsed, templates);
+                const normalized = normalizeUiTemplateUpdateListLenient(parsed, templates);
+                updates = normalized.updates;
+                warnings = normalized.warnings;
             } catch (e) {
                 const reason = e instanceof SyntaxError
                     ? `变量块格式错误：${e.message}`
@@ -3104,34 +3114,37 @@ const app = createApp({
 
             attachUiTemplateBlocksToLastAssistant({ targetMessageId: targetMessage.id });
 
+            if (warnings.length) {
+                console.warn('[UI模板] 主模型变量已部分应用（忽略异常字段）:', warnings.join('；'));
+            }
             if (changedFieldCount > 0) {
                 saveGlobalUiTemplateRuntimeForCharacter();
                 saveData({ saveMemories: false });
-                markUiTemplateStatus('success', `更新 ${changedFieldCount} 项`, 0, targetMessage.id || null);
-                return { handled: true, changed: true };
+                markUiTemplateStatus('success', warnings.length ? `更新 ${changedFieldCount} 项（已容错）` : `更新 ${changedFieldCount} 项`, 0, targetMessage.id || null);
+                return { handled: true, changed: true, failed: false, warnings };
             }
 
             markUiTemplateStatus('skipped', '无变化', 0, targetMessage.id || null);
-            return { handled: true, changed: false };
+            return { handled: true, changed: false, failed: false, warnings };
         };
 
         const appendPendingUiTemplateCorrection = (messageList) => {
             if (!settings.uiTemplateEnabled || !settings.uiTemplateMainModelAnalysis) return;
 
-            let failureMessage = null;
-            let failureIndex = -1;
+            // 只检查紧邻当前请求前最近一条未修复的助手消息，避免陈旧失败长期污染后续多轮上下文
+            let latestAssistantIndex = -1;
             for (let index = chatHistory.value.length - 1; index >= 0; index--) {
-                const message = chatHistory.value[index];
-                if (message?.role === 'assistant' && message.uiTemplateAnalysisFailure) {
-                    failureMessage = message;
-                    failureIndex = index;
+                if (chatHistory.value[index]?.role === 'assistant') {
+                    latestAssistantIndex = index;
                     break;
                 }
             }
-            if (!failureMessage) return;
+            if (latestAssistantIndex < 0) return;
+            const failureMessage = chatHistory.value[latestAssistantIndex];
+            if (!failureMessage?.uiTemplateAnalysisFailure) return;
 
             let userIndex = -1;
-            for (let index = chatHistory.value.length - 1; index > failureIndex; index--) {
+            for (let index = chatHistory.value.length - 1; index > latestAssistantIndex; index--) {
                 if (chatHistory.value[index]?.role === 'user') {
                     userIndex = index;
                     break;
@@ -3146,18 +3159,12 @@ const app = createApp({
             ));
             if (!target) return;
 
-            const userMessage = chatHistory.value[userIndex];
             const failure = failureMessage.uiTemplateAnalysisFailure;
             const correctionPrompt = BUILTIN_PROMPTS.buildMainModelUiTemplateCorrectionPrompt({
                 failureSummary: failure.summary || summarizeUiTemplateFailure(failure.reason),
                 failureReason: failure.reason
             });
-            userMessage.uiTemplateCorrection = {
-                summary: failure.summary || summarizeUiTemplateFailure(failure.reason),
-                sourceMessageId: failure.sourceMessageId || failureMessage.id || null
-            };
-            delete failureMessage.uiTemplateAnalysisFailure;
-            scheduleChatHistorySave();
+            // 仅在本次请求临时附加一次纠错提示，不再永久写入历史用户消息
             target.content = `${correctionPrompt}\n\n${String(target.content || '').trimStart()}`;
         };
 
@@ -4600,7 +4607,33 @@ const app = createApp({
             }
         };
 
-        const updateUiTemplatesFromChat = async ({ manual = false, targetMessageId = null } = {}) => {
+        const resolveUiTemplateAnalysisModel = ({ allowFallback = false } = {}) => {
+            const dedicatedModel = String(settings.uiTemplateModel || '').trim();
+            if (dedicatedModel) {
+                return {
+                    model: dedicatedModel,
+                    providerId: settings.uiTemplateModelProviderId || settings.apiProviderId
+                };
+            }
+            if (!allowFallback) return null;
+            const fastModel = String(settings.fastModel || '').trim();
+            if (fastModel) {
+                return {
+                    model: fastModel,
+                    providerId: settings.fastModelProviderId || settings.apiProviderId
+                };
+            }
+            const mainModel = String(settings.model || '').trim();
+            if (mainModel) {
+                return {
+                    model: mainModel,
+                    providerId: settings.modelProviderId || settings.apiProviderId
+                };
+            }
+            return null;
+        };
+
+        const updateUiTemplatesFromChat = async ({ manual = false, targetMessageId = null, allowModelFallback = false } = {}) => {
             if (!settings.uiTemplateEnabled) {
                 markUiTemplateStatus('skipped', '未开启');
                 return false;
@@ -4646,8 +4679,8 @@ const app = createApp({
                 }));
             const recentMessages = sourceMessages.slice(-normalizedUiTemplateAnalysisDepth);
 
-            const fallbackModel = (settings.uiTemplateModel || '').trim();
-            if (!fallbackModel) {
+            const resolvedModel = resolveUiTemplateAnalysisModel({ allowFallback: allowModelFallback || manual });
+            if (!resolvedModel) {
                 markUiTemplateStatus('skipped', '未选模型');
                 return false;
             }
@@ -4659,7 +4692,7 @@ const app = createApp({
                 let hasChanges = false;
                 let changedFieldCount = 0;
                 let failedTemplateCount = 0;
-                const failedTemplateIds = new Set();
+                const failedReasons = [];
                 const pendingTemplateUpdates = [];
 
                 const applyTemplateUpdates = (template, updates, model) => {
@@ -4673,12 +4706,15 @@ const app = createApp({
                 };
 
                 await Promise.all(templates.map(async (template) => {
-                    const model = fallbackModel;
+                    const model = resolvedModel.model;
                     try {
                         const currentVariableJson = JSON.stringify(template.variableState || {}, null, 2);
                         const variableSchemaText = stringifyUiSchema(template.variableSchema).trim();
                         const result = await requestTrackedChatCompletion({
-                            model, temperature: 0.4, stream: false,
+                            model,
+                            providerId: resolvedModel.providerId,
+                            temperature: 0.4,
+                            stream: false,
                             messages: [
                                 {
                                     role: 'system',
@@ -4704,15 +4740,18 @@ const app = createApp({
                             content: String(content)
                         };
                         window.__RPHubLastUiTemplateAnalysis = latestUiTemplateAnalysis;
-                        console.info('[UI模板][副模型] 最新一次变量输出：', latestUiTemplateAnalysis);
+                        console.info('[UI模板][补算/副模型] 最新一次变量输出：', latestUiTemplateAnalysis);
                         const updateBlock = findUiTemplateUpdateBlock(content);
                         const parsed = parseUiTemplateUpdates(updateBlock ? updateBlock[1] : content, [template]);
-                        const updates = normalizeUiTemplateUpdateList(parsed, [template]);
+                        const { updates, warnings } = normalizeUiTemplateUpdateListLenient(parsed, [template]);
+                        if (warnings.length) {
+                            console.warn(`[UI模板] ${template.name || template.id} 已容错忽略异常字段:`, warnings.join('；'));
+                        }
                         pendingTemplateUpdates.push({ template, updates, model });
                     } catch (e) {
                         if (updateRun.signal.aborted || !isCurrentRun()) return;
                         failedTemplateCount++;
-                        failedTemplateIds.add(template.id);
+                        failedReasons.push(`${template.name || template.id}: ${e.message || '未成功'}`);
                         console.warn(`[UI模板] ${template.name || template.id} 未成功:`, e.message);
                     } finally {
                         if (isCurrentRun()) {
@@ -4732,21 +4771,34 @@ const app = createApp({
                     applyTemplateUpdates(template, updates, model);
                 });
 
-                const inserted = attachUiTemplateBlocksToLastAssistant({ excludeTemplateIds: failedTemplateIds, targetMessageId: lockedTargetMessageId });
+                // 即使部分或全部模板失败，也始终保底渲染当前最新状态，不隐藏模板面板
+                const inserted = attachUiTemplateBlocksToLastAssistant({ targetMessageId: lockedTargetMessageId });
+                if (failedTemplateCount === 0) {
+                    delete targetMessage.uiTemplateAnalysisFailure;
+                } else {
+                    const summary = summarizeUiTemplateFailure(failedReasons.join('；') || `${failedTemplateCount} 个模板更新失败`);
+                    targetMessage.uiTemplateAnalysisFailure = {
+                        summary,
+                        reason: summary,
+                        sourceMessageId: lockedTargetMessageId
+                    };
+                }
 
                 if (hasChanges) {
                     saveGlobalUiTemplateRuntimeForCharacter();
                     saveData({ saveMemories: false });
                     await saveChatHistoryNow();
-                } else if (inserted) {
+                } else if (inserted || failedTemplateCount === 0) {
                     await saveChatHistoryNow();
                 }
                 if (failedTemplateCount) {
-                    failUiTemplateAnalysis(`${failedTemplateCount} 个失败`, lockedTargetMessageId);
+                    failUiTemplateAnalysis(`${failedTemplateCount} 个变量更新失败（已保留面板，可点击重试）`, lockedTargetMessageId);
                 } else if (hasChanges) {
                     markUiTemplateStatus('success', `更新 ${changedFieldCount} 项`, 0, lockedTargetMessageId);
+                    if (manual) showToast(`变量补算完成（更新 ${changedFieldCount} 项）`, 'success');
                 } else {
                     markUiTemplateStatus('skipped', '无变化', 0, lockedTargetMessageId);
+                    if (manual) showToast('变量分析完成，本轮无变化', 'info');
                 }
                 if (uiTemplateUpdateSeq === updateRun.seq) {
                     uiTemplateUpdateAbortController = null;
@@ -4759,10 +4811,27 @@ const app = createApp({
                 uiTemplateUpdateAbortController = null;
                 console.warn('[UI模板] 未成功:', e.message);
                 const failedCount = templates.length || 1;
-                const message = `${failedCount} 个失败`;
-                failUiTemplateAnalysis(message, lockedTargetMessageId);
+                const summary = summarizeUiTemplateFailure(e.message || `${failedCount} 个失败`);
+                targetMessage.uiTemplateAnalysisFailure = {
+                    summary,
+                    reason: summary,
+                    sourceMessageId: lockedTargetMessageId
+                };
+                attachUiTemplateBlocksToLastAssistant({ targetMessageId: lockedTargetMessageId });
+                failUiTemplateAnalysis(`${failedCount} 个变量更新失败（已保留面板，可点击重试）`, lockedTargetMessageId);
                 return false;
             }
+        };
+
+        const retryUiTemplateAnalysisForMessage = async (msg) => {
+            if (!msg || msg.role !== 'assistant') return false;
+            if (isGenerating.value || uiTemplateUpdateStatus.state === 'running') return false;
+            if (!msg.id) msg.id = generateUUID();
+            return updateUiTemplatesFromChat({
+                manual: true,
+                targetMessageId: msg.id,
+                allowModelFallback: true
+            });
         };
 
 
@@ -5348,12 +5417,31 @@ const app = createApp({
                 }
             }
 
+            // Layer 0 零损去噪：主模型变量模式下仅保留最近 1 条合法回复的变量块作格式示范，
+            // 更早轮次与失败残块一律剥离，避免旧变量 JSON 膨胀上下文并与最新状态快照冲突。
+            let latestValidUiUpdateSource = null;
+            if (settings.uiTemplateEnabled && settings.uiTemplateMainModelAnalysis) {
+                for (let idx = chatHistoryForContext.length - 1; idx >= 0 && !latestValidUiUpdateSource; idx--) {
+                    const entry = chatHistoryForContext[idx];
+                    if (entry?.role !== 'assistant' || entry._classicMemory) continue;
+                    const entrySources = Array.isArray(entry._sourceIndexes) && entry._sourceIndexes.length > 0
+                        ? entry._sourceIndexes.map(si => chatHistory.value[si]).filter(s => s && s.role === 'assistant')
+                        : [entry];
+                    for (let sIdx = entrySources.length - 1; sIdx >= 0; sIdx--) {
+                        const candidate = entrySources[sIdx];
+                        if (!candidate || candidate.uiTemplateAnalysisFailure) continue;
+                        if (findUiTemplateUpdateBlock(candidate.content || '')) {
+                            latestValidUiUpdateSource = candidate;
+                            break;
+                        }
+                    }
+                }
+            }
+
             // 添加聊天记录
             messages = messages.concat(chatHistoryForContext
                 .map((m, messageIndex) => {
                     const sourceIndexes = Array.isArray(m._sourceIndexes) ? m._sourceIndexes : [];
-                    const suppressUiTemplateCorrection = m._suppressUiTemplateCorrection === true
-                        || suppressedUiTemplateCorrectionIndexes.has(messageIndex);
                     const sourceMessages = sourceIndexes.length > 0
                         ? sourceIndexes.map(sourceIndex => chatHistory.value[sourceIndex]).filter(source => source && source.role === m.role)
                         : [m];
@@ -5361,22 +5449,16 @@ const app = createApp({
                         // Remove internal thinking/COT from history before sending, then restore only the retained recent blocks.
                         const parsedData = parseCot(source.content || '');
                         let content = stripUiTemplateContextInjection(parsedData.main);
-                        if (!settings.uiTemplateEnabled || !settings.uiTemplateMainModelAnalysis) content = stripUiTemplateUpdateBlock(content);
+                        const keepUiUpdateBlock = settings.uiTemplateEnabled
+                            && settings.uiTemplateMainModelAnalysis
+                            && source === latestValidUiUpdateSource
+                            && !source.uiTemplateAnalysisFailure;
+                        if (!keepUiUpdateBlock) content = stripUiTemplateUpdateBlock(content);
                         content = stripMemoryCitations(stripDisabledImageGenContext(stripNextResponsePrompt(content)));
                         const recentThinking = source.role === 'assistant' ? recentThinkingByMessage.get(source) : '';
                         if (recentThinking) content = `${wrapAnalysis(retainedThinkingTag, recentThinking)}${content}`;
                         if (source === openingSourceMessage && openingThinking) content = `${openingThinking}${content}`;
                         if (source.role === 'user') content = appendMessageImageDescriptions(source, content);
-                        if (settings.uiTemplateEnabled
-                            && settings.uiTemplateMainModelAnalysis
-                            && source.role === 'user'
-                            && !suppressUiTemplateCorrection
-                            && source.uiTemplateCorrection) {
-                            content = `${BUILTIN_PROMPTS.buildMainModelUiTemplateCorrectionPrompt({
-                                failureSummary: source.uiTemplateCorrection.summary,
-                                failureReason: source.uiTemplateCorrection.reason
-                            })}\n\n${content.trimStart()}`;
-                        }
                         return content.trim();
                     };
                     const cleanContent = sourceMessages
@@ -5428,6 +5510,7 @@ const app = createApp({
 
             let generatedAssistantMessageId = null;
             let assistantMessage = null;
+            let mainModelUiResult = null;
             let continuingAssistantMessage = continuationTargetMessage;
             let continuationToolCall = null;
             let continuationContentStarted = false;
@@ -5643,7 +5726,8 @@ const app = createApp({
                 if (assistantMessage) {
                     generatedAssistantMessageId = assistantMessage.id;
                     if (!toolResponse && settings.uiTemplateEnabled && settings.uiTemplateMainModelAnalysis) {
-                        applyMainModelUiTemplateUpdates(assistantMessage, requestModel);
+                        const canAutoRepair = Boolean(resolveUiTemplateAnalysisModel({ allowFallback: true }));
+                        mainModelUiResult = applyMainModelUiTemplateUpdates(assistantMessage, requestModel, { silent: canAutoRepair });
                     }
 
                     recentGenerationTimes.value.push({ id: assistantMessage.id, duration });
@@ -5719,10 +5803,21 @@ const app = createApp({
                         || memorySettings.enabled);
                 const hasCompletedTurns = !activeToolContinued && needsPostGenerationTurns && buildConversationTurnSnapshot().turns.length > 0;
 
-                if (hasCompletedTurns && settings.uiTemplateEnabled && generatedAssistantMessageId && !settings.uiTemplateMainModelAnalysis) {
-                    nextTick(() => {
-                        updateUiTemplatesFromChat({ manual: false, targetMessageId: generatedAssistantMessageId });
-                    });
+                if (hasCompletedTurns && settings.uiTemplateEnabled && generatedAssistantMessageId) {
+                    if (!settings.uiTemplateMainModelAnalysis) {
+                        nextTick(() => {
+                            updateUiTemplatesFromChat({ manual: false, targetMessageId: generatedAssistantMessageId });
+                        });
+                    } else if (mainModelUiResult?.failed && resolveUiTemplateAnalysisModel({ allowFallback: true })) {
+                        // 主模型变量校验失败时，自动执行 1 次轻量原地变量补算，不重发正文
+                        nextTick(() => {
+                            updateUiTemplatesFromChat({
+                                manual: false,
+                                targetMessageId: generatedAssistantMessageId,
+                                allowModelFallback: true
+                            });
+                        });
+                    }
                 }
 
                 // 记忆提取：在对话正常完成后异步提取记忆（用户取消时不触发）
@@ -9119,7 +9214,7 @@ const app = createApp({
             copyMessage, playMessageActionFeedback, canDeleteMessage, deleteMessage, regenerateMessage,
             editMessage, saveEditMessage, cancelEditMessage,
             createNewCharacter, editCharacter, saveCharacter, deleteCharacter, selectCharacter, toggleCharacterFavorite, isCharacterFavorite,
-            currentUiTemplates, activeUiTemplates, uiTemplateUpdateStatus, createUiTemplate, editUiTemplate, saveUiTemplate, deleteUiTemplate, importUiTemplates, updateUiTemplatesFromChat, renderEditingUiTemplatePreview, handleUiTemplateClick,
+            currentUiTemplates, activeUiTemplates, uiTemplateUpdateStatus, createUiTemplate, editUiTemplate, saveUiTemplate, deleteUiTemplate, importUiTemplates, updateUiTemplatesFromChat, retryUiTemplateAnalysisForMessage, renderEditingUiTemplatePreview, handleUiTemplateClick,
             isBatchDeleteMode, isNavigationOpen, selectedCharacterIndices, toggleBatchDeleteMode, toggleCharacterSelection, batchDeleteCharacters,
             handleAvatarUpload, importCharacter,
             createPreset, editPreset, savePreset, deletePreset,

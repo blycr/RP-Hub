@@ -1478,6 +1478,128 @@ ${content}
         return match ? source.slice(0, match.index).trimEnd() : source;
     };
 
+    const repairUiTemplateJson = (rawSource) => {
+        const text = String(rawSource || '').trim();
+        if (!text) return null;
+        const firstObj = text.indexOf('{');
+        const firstArr = text.indexOf('[');
+        let start = -1;
+        if (firstObj >= 0 && firstArr >= 0) start = Math.min(firstObj, firstArr);
+        else start = Math.max(firstObj, firstArr);
+        if (start < 0) return null;
+
+        let out = '';
+        let inString = false;
+        let escaped = false;
+        const stack = [];
+        for (let i = start; i < text.length; i++) {
+            const ch = text[i];
+            if (inString) {
+                if (escaped) {
+                    out += ch;
+                    escaped = false;
+                } else if (ch === '\\') {
+                    out += ch;
+                    escaped = true;
+                } else if (ch === '"') {
+                    out += ch;
+                    inString = false;
+                } else if (ch === '\n') {
+                    out += '\\n';
+                } else if (ch === '\r') {
+                    out += '\\r';
+                } else {
+                    out += ch;
+                }
+                continue;
+            }
+            if (ch === '/' && text[i + 1] === '/') {
+                while (i < text.length && text[i] !== '\n') i++;
+                continue;
+            }
+            if (ch === '/' && text[i + 1] === '*') {
+                i += 2;
+                while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
+                i++;
+                continue;
+            }
+            if (ch === '"') {
+                inString = true;
+                out += ch;
+                continue;
+            }
+            if (ch === '{' || ch === '[') {
+                stack.push(ch === '{' ? '}' : ']');
+                out += ch;
+                continue;
+            }
+            if (ch === '}' || ch === ']') {
+                if (stack.length && stack[stack.length - 1] === ch) {
+                    stack.pop();
+                    out += ch;
+                    if (stack.length === 0) break;
+                } else {
+                    out += ch;
+                }
+                continue;
+            }
+            out += ch;
+        }
+
+        if (inString) {
+            if (escaped) out = out.slice(0, -1);
+            out += '"';
+        }
+
+        // Strip trailing commas outside string literals
+        const stripTrailingCommas = (input) => {
+            let result = '';
+            let inside = false;
+            let esc = false;
+            for (let i = 0; i < input.length; i++) {
+                const c = input[i];
+                if (inside) {
+                    result += c;
+                    if (esc) esc = false;
+                    else if (c === '\\') esc = true;
+                    else if (c === '"') inside = false;
+                    continue;
+                }
+                if (c === '"') {
+                    inside = true;
+                    result += c;
+                    continue;
+                }
+                if (c === ',') {
+                    let j = i + 1;
+                    while (j < input.length && /\s/.test(input[j])) j++;
+                    if (j < input.length && (input[j] === '}' || input[j] === ']')) continue;
+                }
+                result += c;
+            }
+            return result;
+        };
+
+        let candidate = out.trimEnd();
+        // Trim truncated dangling property / colon / comma at end before closing brackets
+        if (stack.length > 0) {
+            candidate = candidate
+                .replace(/,\s*"(?:\\.|[^"\\])*"\s*:\s*$/s, '')
+                .replace(/,\s*"(?:\\.|[^"\\])*"\s*$/s, '')
+                .replace(/:\s*$/s, ': null')
+                .replace(/,\s*$/s, '');
+            for (let i = stack.length - 1; i >= 0; i--) {
+                candidate += stack[i];
+            }
+        }
+        candidate = stripTrailingCommas(candidate);
+        try {
+            return JSON.parse(candidate);
+        } catch (_) {
+            return null;
+        }
+    };
+
     const parseUiTemplateUpdates = (rawContent, expectedTemplates = []) => {
         const source = String(rawContent || '').trim()
             .replace(/^```(?:json)?\s*/i, '')
@@ -1488,26 +1610,75 @@ ${content}
         try {
             parsed = JSON.parse(source);
         } catch (error) {
-            const parseError = new SyntaxError(`JSON变量块格式错误：${error.message}`);
-            parseError.jsonSource = source;
-            throw parseError;
+            const repaired = repairUiTemplateJson(source);
+            if (repaired === null) {
+                const parseError = new SyntaxError(`JSON变量块格式错误：${error.message}`);
+                parseError.jsonSource = source;
+                throw parseError;
+            }
+            parsed = repaired;
         }
-        if (expectedTemplates.length > 1 && Array.isArray(parsed)
-            && parsed.every(item => item && typeof item === 'object' && !Array.isArray(item)
-                && typeof item.id === 'string' && Object.prototype.hasOwnProperty.call(item, 'variables'))) {
-            return { updates: parsed.map(item => ({ id: item.id.trim(), variables: item.variables })) };
+        const isTemplateWrapperItem = (item) => item && typeof item === 'object' && !Array.isArray(item)
+            && typeof item.id === 'string' && Object.prototype.hasOwnProperty.call(item, 'variables');
+        if (Array.isArray(parsed) && parsed.length > 0 && parsed.every(isTemplateWrapperItem)) {
+            if (expectedTemplates.length > 1) {
+                return { updates: parsed.map(item => ({ id: item.id.trim(), variables: item.variables })) };
+            }
+            if (expectedTemplates.length === 1 && !Array.isArray(inferInitialUiTemplateState(expectedTemplates[0]))) {
+                return { updates: parsed.map(item => ({ id: item.id.trim(), variables: item.variables })) };
+            }
+        }
+        if (expectedTemplates.length === 1 && isTemplateWrapperItem(parsed)
+            && Object.keys(parsed).every(key => ['id', 'variables'].includes(key))) {
+            const initial = inferInitialUiTemplateState(expectedTemplates[0]);
+            const hasOwnVariablesField = initial && typeof initial === 'object' && !Array.isArray(initial)
+                && Object.prototype.hasOwnProperty.call(initial, 'variables');
+            if (!hasOwnVariablesField) {
+                return { updates: [{ id: parsed.id.trim(), variables: parsed.variables }] };
+            }
+        }
+        if (expectedTemplates.length > 1 && Array.isArray(parsed) && parsed.length === 0) {
+            return { updates: [] };
         }
         return { updates: [{ id: '', variables: parsed }] };
     };
 
-    const normalizeUiTemplateUpdateList = (parsed, expectedTemplates = []) => {
+    const coerceScalarToExpectedType = (samples, actual) => {
+        const typedSamples = samples.filter(sample => sample !== null && sample !== undefined);
+        if (!typedSamples.length) return { matched: true, value: actual };
+        const valueType = value => Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
+        const actualType = valueType(actual);
+        if (actual === null && samples.includes(null)) return { matched: true, value: null };
+        if (typedSamples.some(sample => valueType(sample) === actualType)) return { matched: true, value: actual };
+
+        const expectedTypes = new Set(typedSamples.map(valueType));
+        if (expectedTypes.has('number') && typeof actual === 'string') {
+            const trimmed = actual.trim();
+            if (/^-?\d+(?:\.\d+)?$/.test(trimmed)) {
+                const num = Number(trimmed);
+                if (Number.isFinite(num)) return { matched: true, value: num };
+            }
+        }
+        if (expectedTypes.has('boolean') && typeof actual === 'string') {
+            const lower = actual.trim().toLowerCase();
+            if (lower === 'true') return { matched: true, value: true };
+            if (lower === 'false') return { matched: true, value: false };
+        }
+        if (expectedTypes.has('string') && (typeof actual === 'number' || typeof actual === 'boolean')) {
+            if (typeof actual === 'boolean' || Number.isFinite(actual)) {
+                return { matched: true, value: String(actual) };
+            }
+        }
+        return { matched: false, value: actual };
+    };
+
+    const normalizeUiTemplateUpdateListInternal = (parsed, expectedTemplates = [], { partial = false } = {}) => {
         const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
         const isUnsafeKey = key => ['__proto__', 'prototype', 'constructor'].includes(String(key));
-        const valueType = value => Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
         const issues = [];
         const updates = isRecord(parsed) && Array.isArray(parsed.updates) ? parsed.updates : [];
         if (!isRecord(parsed) || !Array.isArray(parsed.updates)) issues.push('变量块缺少有效的JSON更新内容');
-        if (!issues.length && !updates.length) return updates;
+        if (!issues.length && !updates.length) return { updates: [], warnings: [] };
         const templatesById = new Map(expectedTemplates.map(template => [String(template.id), template]));
         const resolveTemplateId = (rawId) => {
             const candidate = String(rawId || '').trim();
@@ -1560,22 +1731,33 @@ ${content}
             if (!hasIdMarker && !allowsNewKey) return undefined;
             return expected.flatMap(Object.values);
         };
-        const validateValue = (samples, actual, path, schemaText, unknownNames, invalidNames) => {
-            const typedSamples = samples.filter(sample => sample !== null && sample !== undefined);
-            if (actual === null && samples.includes(null)) return;
-            if (typedSamples.length && !typedSamples.some(sample => valueType(sample) === valueType(actual))) {
+        const sanitizeValue = (samples, actual, path, schemaText, unknownNames, invalidNames) => {
+            const coerced = coerceScalarToExpectedType(samples, actual);
+            if (!coerced.matched) {
                 invalidNames.push(path || '$root');
-                return;
+                return { keep: false, value: undefined };
             }
-            if (Array.isArray(actual)) {
-                // 所有原始成员共同定义合法字段；空数组不推断成员结构，但仍检查危险键。
+            const nextActual = coerced.value;
+            const typedSamples = samples.filter(sample => sample !== null && sample !== undefined);
+            if (Array.isArray(nextActual)) {
                 const items = typedSamples.filter(Array.isArray).flat();
-                actual.forEach((item, index) => validateValue(items, item, (path || '$root') + '[' + index + ']', schemaText, unknownNames, invalidNames));
-                return;
+                const keptItems = [];
+                nextActual.forEach((item, index) => {
+                    const res = sanitizeValue(items, item, (path || '$root') + '[' + index + ']', schemaText, unknownNames, invalidNames);
+                    if (res.keep) keptItems.push(res.value);
+                });
+                if (partial && nextActual.length > 0 && keptItems.length === 0) {
+                    return { keep: false, value: undefined };
+                }
+                return { keep: true, value: keptItems };
             }
-            if (isRecord(actual)) {
+            if (isRecord(nextActual)) {
                 const objects = typedSamples.filter(isRecord);
-                Object.entries(actual).forEach(([key, value]) => {
+                const entries = Object.entries(nextActual);
+                if (entries.length === 0) return { keep: true, value: {} };
+                const keptObj = {};
+                let keptCount = 0;
+                entries.forEach(([key, value]) => {
                     if (isUnsafeKey(key)) { unknownNames.push(path ? path + '.' + key : key); return; }
                     const childPath = path ? path + '.' + key : key;
                     let childSamples = objects.filter(object => Object.prototype.hasOwnProperty.call(object, key)).map(object => object[key]);
@@ -1583,24 +1765,57 @@ ${content}
                         childSamples = dynamicSamplesFor(objects, path, schemaText);
                         if (childSamples === undefined) { unknownNames.push(childPath); return; }
                     }
-                    validateValue(childSamples, value, childPath, schemaText, unknownNames, invalidNames);
+                    const res = sanitizeValue(childSamples, value, childPath, schemaText, unknownNames, invalidNames);
+                    if (res.keep) {
+                        keptObj[key] = res.value;
+                        keptCount++;
+                    }
                 });
+                if (partial && keptCount === 0) return { keep: false, value: undefined };
+                return { keep: true, value: keptObj };
             }
+            return { keep: true, value: nextActual };
         };
+
+        const acceptedUpdates = [];
         receivedById.forEach((received, id) => {
             const template = templatesById.get(id);
             const label = template.name || id;
             if (received.length > 1) issues.push('模板“' + label + '”重复输出了 ' + received.length + ' 次');
             const unknownNames = [];
             const invalidNames = [];
-            // 字段定义不随运行状态缩减；旧模板沿用已有的初始状态推断。
-            validateValue([inferInitialUiTemplateState(template)], received[0].variables, '', stringifyUiSchema(template.variableSchema), unknownNames, invalidNames);
+            const sanitized = sanitizeValue(
+                [inferInitialUiTemplateState(template)],
+                received[0].variables,
+                '',
+                stringifyUiSchema(template.variableSchema),
+                unknownNames,
+                invalidNames
+            );
             if (unknownNames.length) issues.push('模板“' + label + '”输出了未定义变量：' + unknownNames.join('、'));
             if (invalidNames.length) issues.push('模板“' + label + '”变量类型或结构错误：' + invalidNames.join('、'));
+            if (sanitized.keep) {
+                acceptedUpdates.push({ id, variables: sanitized.value });
+            }
         });
-        if (issues.length) throw new Error(issues.join('；'));
-        return normalizedUpdates;
+
+        if (!partial) {
+            if (issues.length) throw new Error(issues.join('；'));
+            return { updates: acceptedUpdates, warnings: [] };
+        }
+        if (!acceptedUpdates.length) {
+            throw new Error(issues.length ? issues.join('；') : '变量块没有可应用的有效字段');
+        }
+        return { updates: acceptedUpdates, warnings: issues };
     };
+
+    const normalizeUiTemplateUpdateList = (parsed, expectedTemplates = []) => (
+        normalizeUiTemplateUpdateListInternal(parsed, expectedTemplates, { partial: false }).updates
+    );
+
+    const normalizeUiTemplateUpdateListLenient = (parsed, expectedTemplates = []) => (
+        normalizeUiTemplateUpdateListInternal(parsed, expectedTemplates, { partial: true })
+    );
     const applyUiTemplateUpdateListToTemplate = (template, updates, { model = '', turn = null, source = 'ai' } = {}) => {
         let fieldCount = 0;
         let changed = false;
@@ -1665,7 +1880,9 @@ ${content}
         inferInitialUiTemplateState,
         normalizeUiTemplate,
         normalizeUiTemplateUpdateList,
+        normalizeUiTemplateUpdateListLenient,
         parseUiTemplateUpdates,
+        repairUiTemplateJson,
         renderUiTemplateHtml,
         renderUiTemplateString,
         sanitizeUiTemplateImportEntry,
